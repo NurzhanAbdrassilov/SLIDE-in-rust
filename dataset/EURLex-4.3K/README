@@ -1,0 +1,6 @@
+Sources: 
+[1] http://nlp.cs.aueb.gr/software_and_datasets/EURLEX57K/index.html
+[2] https://www.aclweb.org/anthology/W19-2209/
+[3] https://www.aclweb.org/anthology/P19-1636/
+
+Changes: Renamed to EURLex-4.3K to follow the naming convention of extreme classification repository.

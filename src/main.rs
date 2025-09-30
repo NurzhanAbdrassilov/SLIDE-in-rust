@@ -380,52 +380,44 @@ fn read_line_utf8(fd: u32, buf: &mut [i8]) -> Option<String> {
 
 fn main() {
     let args: Vec<String> = env::args().collect();
-    if args.len() < 3 {
-        eprintln!("Usage: {} <test_hash> <train_hash>", args.get(0).unwrap_or(&"w1".to_string()));
-        return;
-    }
-
-    println!("Starting Deep Learning Benchmark as worker: {}", args[0]);
-    let worker_id = if args[0].contains("slide-in-rust") {
-        0 // Default to worker 0 for single-worker mode
-    } else {
+    
+    println!("Starting SLIDE Deep Learning with Eurlex Dataset");
+    let worker_id = if args.len() > 0 && !args[0].contains("slide-in-rust") {
         parse_number(&args[0]) - 1
+    } else {
+        0 // Default to worker 0
     };
 
-    let hash_test  = args[1].clone();
-    let hash_train = args[2].clone();
-
-    println!("Training hash: {}", hash_train);
-    println!("Test hash: {}", hash_test);
+    println!("Using Eurlex dataset with {} workers", NUM_WAIT);
+    println!("Worker ID: {}", worker_id);
 
     let mut cfg = ParsedCfg {
-        Batchsize: 32,   // Much smaller batch size
-        Rehash: 1000,
-        Rebuild: 1000,
-        InputDim: 784,
-        totRecords: 320,  // Very small for testing - only 10 batches
-        totRecordsTest: 128,  // Very small for testing
-        Lr: 0.0001,
-        Epoch: 1,  // Just one epoch for testing
-        Stepsize: 20,
-        numLayer: 2,  // Reduce to 2 layers
+        Batchsize: 32,  // Smaller batch size to reduce memory usage
+        Rehash: 6400,
+        Rebuild: 128000,
+        InputDim: 200000,  // Actual Eurlex input dimension
+        totRecords: 45000,  // Actual Eurlex training records
+        totRecordsTest: 6000,  // Actual Eurlex test records
+        Lr: 0.05,  // Increased learning rate for better convergence
+        Epoch: 5,  // More epochs for proper training
+        Stepsize: 1000,
+        numLayer: 2,
         ..Default::default()
     };
     let blob = default_config_blob();
     parseconfig(&blob, &mut cfg);
 
-    cfg.trainData = hash_train;
-    cfg.testData = hash_test;
-    
-    // Override for testing with smaller values - AFTER parseconfig to ensure they take effect
-    cfg.sizesOfLayers = vec![32, 100];  // Small network: 32 hidden nodes, 100 output classes
-    cfg.totRecords = 320;  // Very small for testing - only 10 batches
-    cfg.totRecordsTest = 128;  // Very small for testing
-    cfg.Batchsize = 32;   // Much smaller batch size
-    cfg.Epoch = 1;  // Just one epoch for testing
-    cfg.numLayer = 2;  // Reduce to 2 layers
-    // Keep the original InputDim to match the Amazon dataset
-    cfg.InputDim = 203882;  // Match Amazon dataset feature space
+    // Override with Eurlex dataset paths and corrected parameters - AFTER parseconfig to ensure they take effect
+    cfg.trainData = "dataset\\EURLex-4.3K\\train.txt".to_string();
+    cfg.testData = "dataset\\EURLex-4.3K\\test.txt".to_string();
+    cfg.sizesOfLayers = vec![64, 4271];  // Smaller hidden layer (64 nodes) and correct output classes (4271)
+    cfg.InputDim = 200000;  // Actual Eurlex input dimension
+    cfg.totRecords = 45000;  // Actual Eurlex training records
+    cfg.totRecordsTest = 6000;  // Actual Eurlex test records
+    cfg.Batchsize = 32;   // Smaller batch size to reduce memory usage
+    cfg.Epoch = 5;  // More epochs for proper training
+    cfg.numLayer = 2;
+    cfg.Lr = 0.01;  // Override learning rate after parseconfig
 
     let num_batches = cfg.totRecords / cfg.Batchsize;
     let num_batches_test = cfg.totRecordsTest / cfg.Batchsize;
@@ -454,6 +446,14 @@ fn main() {
     let t2 = Instant::now();
     let time_ms = (t2 - t1).as_micros() as f64 / 1000.0;
     println!("Network Initialization takes {} milliseconds", time_ms);
+    
+    // Print actual configuration being used
+    println!("=== CONFIGURATION ===");
+    println!("Learning Rate: {}", cfg.Lr);
+    println!("Batch Size: {}", cfg.Batchsize);
+    println!("Input Dim: {}", cfg.InputDim);
+    println!("Layer Sizes: {:?}", cfg.sizesOfLayers);
+    println!("===================");
 
     // Report initial weight statistics
     println!("=== INITIAL WEIGHTS ===");
@@ -461,7 +461,16 @@ fn main() {
 
     for e in 0..cfg.Epoch {
         println!("=== STARTING EPOCH {} ===", e);
-        read_data_svm(num_batches, &mut net, e, &cfg);
+        
+        // Add panic handler around training
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            read_data_svm(num_batches, &mut net, e, &cfg);
+        })).unwrap_or_else(|_| {
+            println!("ERROR: Panic occurred in read_data_svm for epoch {}", e);
+            std::process::exit(1);
+        });
+
+        println!("=== COMPLETED EPOCH {} ===", e);
 
         // Report weight statistics after each epoch  
         println!("=== WEIGHTS AFTER EPOCH {} ===", e);
@@ -474,4 +483,6 @@ fn main() {
         }
         net.save_weights(&cfg.savedWeights);
     }
+    
+    println!("=== TRAINING COMPLETED SUCCESSFULLY ===");
 }

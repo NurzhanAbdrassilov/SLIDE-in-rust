@@ -707,12 +707,12 @@ impl Layer {
         for i in 0..next_len {
             let node_id = active_nodes_per_layer[layer_index + 1][i];
             
-            // For single-worker mode, clamp node_id to valid range
+            // Ensure node_id is within bounds for this layer
             let node_id = node_id.min(self.nodes.len().saturating_sub(1));
             
             let worker_id = (node_id * self.previous_layer_num_of_nodes) / self.weights.batch;
 
-            // For single-worker mode, clamp worker_id to valid range
+            // Ensure worker_id is within bounds for distributed storage
             let worker_id = worker_id.min(full_weights.len().saturating_sub(1));
             debug_assert!(worker_id < full_weights.len());
             debug_assert!(worker_id < full_bias.len());

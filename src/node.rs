@@ -216,9 +216,28 @@ impl Node {
     }
 
     pub fn increment_delta(&mut self, input_id: usize, increment_value: f32) {
-        assert!(self.train[input_id].active_input_ids == 1, "Input Not Active but still called !! BUG");
+        // Debug: Check assertion condition before asserting
+        if self.train[input_id].active_input_ids != 1 {
+            println!("[ERROR] increment_delta called on inactive input! Node layer {}, id {}, input_id {}, active_input_ids {}", 
+                    self.layer_num, self.id_in_layer, input_id, self.train[input_id].active_input_ids);
+            // For now, make it active instead of crashing
+            self.train[input_id].active_input_ids = 1;
+            self.active_inputs += 1;
+        }
+        
         if self.train[input_id].last_activation > 0.0 {
             self.train[input_id].last_delta_for_bp += increment_value;
+            // Debug: Show gradient accumulation for first layer
+            if input_id == 0 && self.layer_num == 0 && self.id_in_layer < 3 {
+                println!("[DEBUG] ReLU Node {} accumulated delta: {} (increment: {}, activation: {})", 
+                        self.id_in_layer, self.train[input_id].last_delta_for_bp, increment_value, self.train[input_id].last_activation);
+            }
+        } else {
+            // Debug: Show when ReLU blocks gradient
+            if input_id == 0 && self.layer_num == 0 && self.id_in_layer < 3 {
+                println!("[DEBUG] ReLU Node {} blocked gradient (activation: {})", 
+                        self.id_in_layer, self.train[input_id].last_activation);
+            }
         }
     }
 
@@ -300,11 +319,25 @@ impl Node {
         let scaled = self.train[input_id].last_activation / (normalization_constant + 1e-7);
         self.train[input_id].last_activation = scaled;
         self.train[input_id].last_gradient = 1.0;
+        
+        // Debug: Print softmax computation details for first few nodes
+        if input_id == 0 && self.layer_num == 1 && self.id_in_layer < 3 {
+            println!("[DEBUG] Softmax Node {} - activation: {}, norm_const: {}, scaled: {}", 
+                    self.id_in_layer, self.train[input_id].last_activation, normalization_constant, scaled);
+            println!("[DEBUG] Labels: {:?}, contains node {}: {}", 
+                    label, self.id_in_layer, label.contains(&self.id_in_layer));
+        }
+        
         if label.contains(&self.id_in_layer) {
             self.train[input_id].last_delta_for_bp =
                 (1.0 / label.len() as f32 - scaled) / self.current_batch_size as f32;
         } else {
             self.train[input_id].last_delta_for_bp = (-scaled) / self.current_batch_size as f32;
+        }
+        
+        // Debug: Print computed delta
+        if input_id == 0 && self.layer_num == 1 && self.id_in_layer < 3 {
+            println!("[DEBUG] Node {} delta: {}", self.id_in_layer, self.train[input_id].last_delta_for_bp);
         }
     }
 

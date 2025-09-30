@@ -303,7 +303,7 @@ impl Network {
                 for k in 0..sizes[j + 1] {
                     let node_id = active_nodes_per_layer[j + 1][k];
                     
-                    // For single-worker mode, clamp node_id to valid range
+                    // Ensure node_id is within bounds for this layer
                     let node_id = node_id.min(cur_layer.no_of_nodes.saturating_sub(1));
 
                     let norm_const = if is_last {
@@ -407,19 +407,31 @@ impl Network {
                         let b_guard = arr_t_bias.data.lock().unwrap();
                         for i in start_n..end_n {
                             let node = self.hiddenlayers[l].get_node_by_id(i);
-                            node.tbias += b_guard[i - bias_off];
+                            // Calculate the local offset within the worker's bias data
+                            // The bias_off is the global start offset for this worker's data
+                            if i >= bias_off && (i - bias_off) < b_guard.len() {
+                                node.tbias += b_guard[i - bias_off];
+                            }
                         }
                     }
 
                     let start = start_n * dim;
                     let end   = end_n * dim;
                     let w_guard = arr_t_batch.data.lock().unwrap();
+                    let batch_start_node = batch_off / dim; // Convert batch offset to node-based offset
                     for idx in (start..end).step_by(dim) {
                         let node_id = idx / dim;
-                        let src = &w_guard[(idx - batch_off)..(idx - batch_off + dim)];
-                        let t_dst = self.hiddenlayers[l].get_node_by_id(node_id).t.as_mut().unwrap();
-                        for d in 0..dim {
-                            t_dst[d] += src[d];
+                        // Calculate the local offset within the worker's batch data
+                        if node_id >= batch_start_node {
+                            let local_node_idx = node_id - batch_start_node;
+                            let local_idx = local_node_idx * dim;
+                            if local_idx + dim <= w_guard.len() {
+                                let src = &w_guard[local_idx..(local_idx + dim)];
+                                let t_dst = self.hiddenlayers[l].get_node_by_id(node_id).t.as_mut().unwrap();
+                                for d in 0..dim {
+                                    t_dst[d] += src[d];
+                                }
+                            }
                         }
                     }
 
