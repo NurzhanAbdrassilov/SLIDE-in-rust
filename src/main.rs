@@ -240,6 +240,17 @@ fn read_data_svm(num_batches: usize, net: &mut Network, epoch: usize, cfg: &Pars
         if ((i + epoch * num_batches) % cfg.Stepsize) == 0 {
             eval_data_svm(20, net, (epoch * num_batches + i) as i32, &cfg.testData, cfg.Batchsize);
         }
+        
+        // Debug: Show progress every 10 batches
+        if i % 10 == 0 {
+            println!("[DEBUG] Processing batch {}/{} in epoch {}", i, num_batches, epoch);
+        }
+        
+        // Show weight statistics after first few batches to confirm updates
+        if i == 5 && epoch == 0 {
+            println!("=== WEIGHTS AFTER 5 BATCHES ===");
+            net.report_weight_stats();
+        }
 
         let mut records: Vec<Vec<usize>> = Vec::with_capacity(cfg.Batchsize);
         let mut values:  Vec<Vec<f32>>   = Vec::with_capacity(cfg.Batchsize);
@@ -375,7 +386,11 @@ fn main() {
     }
 
     println!("Starting Deep Learning Benchmark as worker: {}", args[0]);
-    let worker_id = parse_number(&args[0]) - 1;
+    let worker_id = if args[0].contains("slide-in-rust") {
+        0 // Default to worker 0 for single-worker mode
+    } else {
+        parse_number(&args[0]) - 1
+    };
 
     let hash_test  = args[1].clone();
     let hash_train = args[2].clone();
@@ -384,16 +399,16 @@ fn main() {
     println!("Test hash: {}", hash_test);
 
     let mut cfg = ParsedCfg {
-        Batchsize: 1000,
+        Batchsize: 32,   // Much smaller batch size
         Rehash: 1000,
         Rebuild: 1000,
         InputDim: 784,
-        totRecords: 60000,
-        totRecordsTest: 10000,
+        totRecords: 320,  // Very small for testing - only 10 batches
+        totRecordsTest: 128,  // Very small for testing
         Lr: 0.0001,
-        Epoch: 5,
+        Epoch: 1,  // Just one epoch for testing
         Stepsize: 20,
-        numLayer: 3,
+        numLayer: 2,  // Reduce to 2 layers
         ..Default::default()
     };
     let blob = default_config_blob();
@@ -401,6 +416,16 @@ fn main() {
 
     cfg.trainData = hash_train;
     cfg.testData = hash_test;
+    
+    // Override for testing with smaller values - AFTER parseconfig to ensure they take effect
+    cfg.sizesOfLayers = vec![32, 100];  // Small network: 32 hidden nodes, 100 output classes
+    cfg.totRecords = 320;  // Very small for testing - only 10 batches
+    cfg.totRecordsTest = 128;  // Very small for testing
+    cfg.Batchsize = 32;   // Much smaller batch size
+    cfg.Epoch = 1;  // Just one epoch for testing
+    cfg.numLayer = 2;  // Reduce to 2 layers
+    // Keep the original InputDim to match the Amazon dataset
+    cfg.InputDim = 203882;  // Match Amazon dataset feature space
 
     let num_batches = cfg.totRecords / cfg.Batchsize;
     let num_batches_test = cfg.totRecordsTest / cfg.Batchsize;
@@ -430,9 +455,17 @@ fn main() {
     let time_ms = (t2 - t1).as_micros() as f64 / 1000.0;
     println!("Network Initialization takes {} milliseconds", time_ms);
 
+    // Report initial weight statistics
+    println!("=== INITIAL WEIGHTS ===");
+    net.report_weight_stats();
+
     for e in 0..cfg.Epoch {
-        println!("Epoch: {}", e);
+        println!("=== STARTING EPOCH {} ===", e);
         read_data_svm(num_batches, &mut net, e, &cfg);
+
+        // Report weight statistics after each epoch  
+        println!("=== WEIGHTS AFTER EPOCH {} ===", e);
+        net.report_weight_stats();
 
         if e == cfg.Epoch - 1 {
             eval_data_svm(num_batches_test, &mut net, ((e + 1) * num_batches) as i32, &cfg.testData, cfg.Batchsize);

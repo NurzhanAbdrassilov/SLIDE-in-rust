@@ -1,323 +1,173 @@
-use std::os::raw::{c_char, c_int};
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 use crate::types::{kv_key_t, kv_val_datatype_t, kv_val_t};
 
 pub const MAX_VAL_SIZE: usize = std::mem::size_of::<f32>() * (1 << 20);
 
+// Dummy KVS implementation using HashMap
+struct DummyKVS {
+    storage: HashMap<String, kv_val_t>,
+}
+
+impl DummyKVS {
+    fn new() -> Self {
+        DummyKVS {
+            storage: HashMap::new(),
+        }
+    }
+
+    fn read_key(&self, key: &str) -> Option<kv_val_t> {
+        self.storage.get(key).cloned()
+    }
+
+    fn write_kv(&mut self, key: &str, val: kv_val_t) {
+        self.storage.insert(key.to_string(), val);
+    }
+
+    #[allow(dead_code)]
+    fn clear(&mut self) {
+        self.storage.clear();
+    }
+}
+
+// Global dummy KVS instance
+lazy_static::lazy_static! {
+    static ref GLOBAL_KVS: Arc<Mutex<DummyKVS>> = Arc::new(Mutex::new(DummyKVS::new()));
+}
+
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum block_storage_status {
-    REJECT_OLD_BLOCK = 1,
-    REJECT_DC = 2,
-    REJECT_TX_FORMAT_ERROR = 3,
-    ACCEPT = 4,
+    RejectOldBlock = 1,
+    RejectDc = 2,
+    RejectTxFormatError = 3,
+    Accept = 4,
 }
 
-#[repr(C)]
-#[derive(Debug, Clone, Copy)]
-pub struct wasm_kv_key_t {
-    pub key: u64,
-    pub size: u64,
-}
-
-#[repr(C)]
-#[derive(Debug, Clone, Copy)]
-pub struct wasm_kv_val_t {
-    pub data: u64,
-    pub size: u64,
-    pub dtype: kv_val_datatype_t,
-    pub ts: usize,
-}
-
-#[repr(C)]
-#[derive(Debug, Clone, Copy)]
-pub struct wasm_lock_names {
-    pub lock_names: u64,
-    pub size: u64,
-}
-
-pub mod ffi {
-    use super::{block_storage_status, wasm_kv_key_t, wasm_kv_val_t};
-    use std::os::raw::{c_char, c_int};
-    use crate::types::{kv_val_datatype_t};
-
-    #[link(wasm_import_module = "wasi_snapshot_preview1")]
-    extern "C" {
-        pub fn debug(x: c_int);
-
-        pub fn NewContext(tid: c_int) -> c_int;
-
-        pub fn _openFile(path: *mut c_char, path_size: usize) -> c_int;
-
-        pub fn batchTransactions(buf: *const u8, buf_size: usize);
-
-        pub fn _ReadKey(
-            ctx: c_int,
-            key: *const wasm_kv_key_t,
-            buf: *mut u8,
-            buf_size: *mut usize,
-            dtype: *mut kv_val_datatype_t,
-            ts: *mut usize,
-        ) -> c_int;
-
-        pub fn _WriteKV(ctx: c_int, key: *const wasm_kv_key_t, val: wasm_kv_val_t);
-
-        pub fn _AddLock(ctx: c_int, name: *const wasm_kv_key_t);
-
-        pub fn _Barrier(barrier_name: *const u8, barrier_name_sz: usize, num_wait: c_int, ctx: c_int);
-
-        pub fn _AddLockGroup(ctx: c_int, names: *const wasm_kv_key_t, size: c_int);
-
-        pub fn _Commit(ctx: c_int, ret: *mut block_storage_status);
-
-        pub fn Input(input: *mut u8, input_size: *mut usize);
-
-        pub fn _ReadFile(fd: u32, file_buf: *mut c_char, file_size: usize) -> usize;
-
-        pub fn Abort(ctx: c_int);
-
-        pub fn _MulticastBlock(
-            buf: *const c_char,
-            buf_size: usize,
-            blk_hsh: *mut c_char,
-            ret: *mut block_storage_status,
-        );
-
-        pub fn DownloadBlockDataFromDC(hsh: *const c_char, buf: *mut c_char, size: *mut c_int, max_sz: c_int);
-
-        pub fn retrieveBatch(tx_buf: *mut u8, tx_buf_sz: *mut usize);
-
-        pub fn _sentDatagram(
-            txr_buf: *const u8,
-            txr_buf_sz: usize,
-            client_addr: *const u8,
-            client_size: usize,
-            r#type: u64,
-        );
-
-        pub fn RegisterResponse(cnt: u64);
-
-        pub fn AsyncFn_1int(
-            idx: c_int,
-            promise_num: u64,
-            fn_name: *const c_char,
-            fn_name_sz: usize,
-            input: u64,
-        );
-
-        pub fn AsyncReturn_int(idx: c_int, input: *mut c_int);
-
-        pub fn Async_GetMode(idx: c_int) -> c_int;
-
-        pub fn Async_GetPromiseNum(idx: c_int) -> u64;
-
-        pub fn Async_ResetMode(idx: c_int);
-
-        pub fn GetCtxRawPtr(idx: c_int) -> u64;
+// Simple context management for compatibility
+pub fn new_context(_tid: i32) -> i32 {
+    static mut NEXT_ID: i32 = 1;
+    unsafe {
+        let id = NEXT_ID;
+        NEXT_ID += 1;
+        id
     }
 }
 
+
+// Direct KVS operations using the dummy HashMap implementation
+pub fn read_key(_ctx: i32, key: &kv_key_t) -> Box<kv_val_t> {
+    let kvs = GLOBAL_KVS.lock().unwrap();
+    if let Some(val) = kvs.read_key(key) {
+        Box::new(val)
+    } else {
+        Box::new(kv_val_t {
+            data: vec![],
+            dtype: kv_val_datatype_t::NOT_FOUND,
+            ts: 0,
+        })
+    }
+}
+
+pub fn write_kv(_ctx: i32, key: &kv_key_t, val: &kv_val_t) {
+    let mut kvs = GLOBAL_KVS.lock().unwrap();
+    kvs.write_kv(key, val.clone());
+}
+
+pub fn commit_tx(_ctx: i32) -> block_storage_status {
+    block_storage_status::Accept
+}
+
+// Stub functions for compatibility
+pub fn add_lock(_ctx: i32, _name: &kv_key_t) {}
+pub fn add_lock_group(_ctx: i32, _names: &[kv_key_t]) {}
+pub fn send_datagram(_data: &str, _client: &str, _ty: u64) {}
+pub fn barrier(tid: i32, _barrier_name: &str, _num_wait: i32) {
+    let _ctx = new_context(tid);
+}
+pub fn multicast_block(_buf: &[u8], _blk_hsh_out: &mut [u8]) -> block_storage_status {
+    block_storage_status::Accept
+}
+
+use std::fs::File;
+use std::io::{BufRead, BufReader};
+use std::sync::LazyLock;
+
+// File operations with proper implementation
+static FILE_HANDLES: LazyLock<Mutex<HashMap<u32, BufReader<File>>>> = LazyLock::new(|| Mutex::new(HashMap::new()));
+static mut NEXT_FILE_ID: u32 = 1;
 
 pub fn open_file(path: &str) -> u32 {
-    let bytes = path.as_bytes();
-    unsafe { ffi::_openFile(bytes.as_ptr() as *mut c_char, bytes.len()) as u32 }
-}
-
-pub fn read_file(fd: u32, buf: &mut [c_char]) -> usize {
-    unsafe { ffi::_ReadFile(fd, buf.as_mut_ptr(), buf.len()) }
-}
-
-pub fn read_key(ctx: c_int, key: &kv_key_t) -> Box<kv_val_t> {
-    let mut data = vec![0u8; MAX_VAL_SIZE];
-    let mut val_size: usize = MAX_VAL_SIZE;
-    let mut dtype = kv_val_datatype_t::NOT_FOUND;
-    let mut ts: usize = 0;
-
-    let kb = key.as_bytes();
-    let k = wasm_kv_key_t { key: kb.as_ptr() as u64, size: kb.len() as u64 };
-
-    unsafe {
-        ffi::_ReadKey(ctx, &k, data.as_mut_ptr(), &mut val_size, &mut dtype, &mut ts);
-    }
-    assert!(val_size <= MAX_VAL_SIZE);
-    data.truncate(val_size);
-
-    Box::new(kv_val_t { data, dtype, ts })
-}
-
-pub fn write_kv(ctx: c_int, key: &kv_key_t, val: &kv_val_t) {
-    let kb = key.as_bytes();
-    let k = wasm_kv_key_t { key: kb.as_ptr() as u64, size: kb.len() as u64 };
-    let v = wasm_kv_val_t {
-        data: val.data.as_ptr() as u64,
-        size: val.data.len() as u64,
-        dtype: kv_val_datatype_t::BYTES,
-        ts: 0,
-    };
-
-    unsafe { ffi::_WriteKV(ctx, &k, v) }
-}
-
-pub fn add_lock(ctx: c_int, name: &kv_key_t) {
-    let nb = name.as_bytes();
-    let k = wasm_kv_key_t { key: nb.as_ptr() as u64, size: nb.len() as u64 };
-    unsafe { ffi::_AddLock(ctx, &k) }
-}
-
-pub fn add_lock_group(ctx: c_int, names: &[kv_key_t]) {
-    let temp: Vec<wasm_kv_key_t> = names.iter().map(|s| {
-        let b = s.as_bytes();
-        wasm_kv_key_t { key: b.as_ptr() as u64, size: b.len() as u64 }
-    }).collect();
-
-    unsafe { ffi::_AddLockGroup(ctx, temp.as_ptr(), temp.len() as c_int) }
-}
-
-pub fn commit_tx(ctx: c_int) -> block_storage_status {
-    let mut ret = block_storage_status::REJECT_OLD_BLOCK;
-    unsafe { ffi::_Commit(ctx, &mut ret) };
-    ret
-}
-
-pub fn send_datagram(data: &str, client: &str, ty: u64) {
-    let db = data.as_bytes();
-    let cb = client.as_bytes();
-    unsafe { ffi::_sentDatagram(db.as_ptr(), db.len(), cb.as_ptr(), cb.len(), ty) }
-}
-
-pub fn barrier(tid: c_int, barrier_name: &str, num_wait: c_int) {
-    let nb = barrier_name.as_bytes();
-    unsafe {
-        let ctx = ffi::NewContext(tid);
-        ffi::_Barrier(nb.as_ptr(), nb.len(), num_wait, ctx);
-        ffi::Abort(ctx);
+    match File::open(path) {
+        Ok(file) => {
+            let reader = BufReader::new(file);
+            unsafe {
+                let id = NEXT_FILE_ID;
+                NEXT_FILE_ID += 1;
+                let mut handles = FILE_HANDLES.lock().unwrap();
+                handles.insert(id, reader);
+                id
+            }
+        },
+        Err(e) => {
+            eprintln!("Failed to open file {}: {}", path, e);
+            0 // Return 0 to indicate failure
+        }
     }
 }
 
-pub fn multicast_block(buf: &[u8], blk_hsh_out: &mut [u8]) -> block_storage_status {
-    let mut ret = block_storage_status::REJECT_OLD_BLOCK;
-    unsafe {
-        ffi::_MulticastBlock(
-            buf.as_ptr() as *const c_char,
-            buf.len(),
-            blk_hsh_out.as_mut_ptr() as *mut c_char,
-            &mut ret,
-        );
+pub fn read_file(fd: u32, buf: &mut [std::os::raw::c_char]) -> usize {
+    let mut handles = FILE_HANDLES.lock().unwrap();
+    if let Some(reader) = handles.get_mut(&fd) {
+        let mut line = String::new();
+        match reader.read_line(&mut line) {
+            Ok(0) => 0, // EOF
+            Ok(_) => {
+                let bytes = line.as_bytes();
+                let copy_len = bytes.len().min(buf.len());
+                for (i, &byte) in bytes.iter().take(copy_len).enumerate() {
+                    buf[i] = byte as std::os::raw::c_char;
+                }
+                copy_len
+            },
+            Err(_) => 0, // Error, treat as EOF
+        }
+    } else {
+        0 // Invalid file descriptor
     }
-    ret
 }
 
-pub mod PSLAsync {
-    use super::ffi;
+// Simplified async module for compatibility
+pub mod psl_async {
     use super::block_storage_status;
-    use std::os::raw::c_int;
 
     pub struct PromiseInt {
-        runner: c_int,
-        ready: bool,
-        val: c_int,
+        val: i32,
     }
 
-    pub struct PromiseVoid {
-        runner: c_int,
-        ready: bool,
-    }
+    pub struct PromiseVoid;
 
-    fn find_idle_runner() -> Option<c_int> {
-        unsafe {
-            for i in 0..2 {
-                if ffi::Async_GetMode(i) == 0 {
-                    return Some(i);
-                }
-            }
-            None
-        }
-    }
-
-    pub fn commit(ctx: c_int) -> PromiseInt {
-        unsafe {
-            if let Some(runner) = find_idle_runner() {
-                let pnum = ffi::Async_GetPromiseNum(runner);
-                let name = b"Commit";
-                let ctx_ptr = ffi::GetCtxRawPtr(ctx);
-                ffi::AsyncFn_1int(
-                    runner,
-                    pnum,
-                    name.as_ptr() as _,
-                    name.len(),
-                    ctx_ptr,
-                );
-                PromiseInt { runner, ready: false, val: 0 }
-            } else {
-                let mut ret = block_storage_status::REJECT_OLD_BLOCK;
-                ffi::_Commit(ctx, &mut ret);
-                PromiseInt { runner: -1, ready: true, val: ret as c_int }
-            }
-        }
+    pub fn commit(_ctx: i32) -> PromiseInt {
+        PromiseInt { val: block_storage_status::Accept as i32 }
     }
 
     impl PromiseInt {
         pub fn wait(self) -> i32 {
-            unsafe {
-                if self.ready {
-                    return self.val;
-                }
-                while ffi::Async_GetMode(self.runner) != 3 {}
-                let mut out: c_int = 0;
-                ffi::AsyncReturn_int(self.runner, &mut out);
-                ffi::Async_ResetMode(self.runner);
-                out
-            }
+            self.val
         }
     }
 
-    pub fn abort(ctx: c_int) -> PromiseVoid {
-        unsafe {
-            if let Some(runner) = find_idle_runner() {
-                let pnum = ffi::Async_GetPromiseNum(runner);
-                let name = b"Abort";
-                let ctx_ptr = ffi::GetCtxRawPtr(ctx);
-                ffi::AsyncFn_1int(
-                    runner,
-                    pnum,
-                    name.as_ptr() as _,
-                    name.len(),
-                    ctx_ptr,
-                );
-                PromiseVoid { runner, ready: false }
-            } else {
-                ffi::Abort(ctx);
-                PromiseVoid { runner: -1, ready: true }
-            }
-        }
+    pub fn abort(_ctx: i32) -> PromiseVoid {
+        PromiseVoid
     }
 
     impl PromiseVoid {
         pub fn wait(self) {
-            unsafe {
-                if self.ready {
-                    return;
-                }
-                while ffi::Async_GetMode(self.runner) != 3 {}
-                ffi::Async_ResetMode(self.runner);
-            }
+            // No-op for dummy implementation
         }
     }
 
-    pub fn generic_async_fn(fn_name: &str) -> PromiseVoid {
-        unsafe {
-            if let Some(runner) = find_idle_runner() {
-                let pnum = ffi::Async_GetPromiseNum(runner);
-                ffi::AsyncFn_1int(
-                    runner,
-                    pnum,
-                    fn_name.as_ptr() as _,
-                    fn_name.len(),
-                    0,
-                );
-                PromiseVoid { runner, ready: false }
-            } else {
-                PromiseVoid { runner: -1, ready: true }
-            }
-        }
+    pub fn generic_async_fn(_fn_name: &str) -> PromiseVoid {
+        PromiseVoid
     }
 }

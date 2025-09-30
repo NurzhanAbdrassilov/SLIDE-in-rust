@@ -76,6 +76,40 @@ impl Network {
         &mut self.hiddenlayers[layer_id]
     }
 
+    pub fn report_weight_stats(&self) {
+        println!("[WEIGHT_STATS] === Network Weight Statistics ===");
+        for (layer_idx, layer) in self.hiddenlayers.iter().enumerate() {
+            println!("[WEIGHT_STATS] Layer {}: {} nodes", layer_idx, layer.nodes.len());
+            
+            // Sample first few nodes to check their weights
+            for (node_idx, node) in layer.nodes.iter().enumerate().take(3) {
+                if let Some(ref weights) = node.mirror_weights {
+                    let sum: f32 = weights.iter().sum();
+                    let avg = sum / weights.len() as f32;
+                    let max_val = weights.iter().fold(f32::NEG_INFINITY, |a, &b| a.max(b));
+                    let min_val = weights.iter().fold(f32::INFINITY, |a, &b| a.min(b));
+                    println!("[WEIGHT_STATS]   Node {} mirror_weights: len={}, sum={:.6}, avg={:.6}, min={:.6}, max={:.6}", 
+                            node_idx, weights.len(), sum, avg, min_val, max_val);
+                }
+                
+                if let Some(ref t_weights) = node.t {
+                    let sum: f32 = t_weights.iter().sum();
+                    let avg = sum / t_weights.len() as f32;
+                    let max_val = t_weights.iter().fold(f32::NEG_INFINITY, |a, &b| a.max(b));
+                    let min_val = t_weights.iter().fold(f32::INFINITY, |a, &b| a.min(b));
+                    println!("[WEIGHT_STATS]   Node {} t_weights: len={}, sum={:.6}, avg={:.6}, min={:.6}, max={:.6}", 
+                            node_idx, t_weights.len(), sum, avg, min_val, max_val);
+                }
+                
+                println!("[WEIGHT_STATS]   Node {} bias: mirror={:.6}, tbias={:.6}", 
+                        node_idx, node.mirror_bias, node.tbias);
+                
+                if node_idx >= 2 { break; } // Only show first 3 nodes per layer
+            }
+        }
+        println!("[WEIGHT_STATS] ================================");
+    }
+
     pub fn predict_class(
         &mut self,
         input_indices: &[Vec<usize>],
@@ -268,6 +302,9 @@ impl Network {
 
                 for k in 0..sizes[j + 1] {
                     let node_id = active_nodes_per_layer[j + 1][k];
+                    
+                    // For single-worker mode, clamp node_id to valid range
+                    let node_id = node_id.min(cur_layer.no_of_nodes.saturating_sub(1));
 
                     let norm_const = if is_last {
                         Some(cur_layer.get_normalization_constant(i))

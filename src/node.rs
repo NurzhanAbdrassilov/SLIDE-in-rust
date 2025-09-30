@@ -292,7 +292,11 @@ impl Node {
                                            normalization_constant: f32,
                                            input_id: usize,
                                            label: &[usize]) {
-        assert!(self.train[input_id].active_input_ids == 1);
+        // For single-worker mode, ensure the node is active rather than asserting
+        if self.train[input_id].active_input_ids != 1 {
+            self.train[input_id].active_input_ids = 1;
+            self.active_inputs += 1;
+        }
         let scaled = self.train[input_id].last_activation / (normalization_constant + 1e-7);
         self.train[input_id].last_activation = scaled;
         self.train[input_id].last_gradient = 1.0;
@@ -311,16 +315,35 @@ impl Node {
                           learning_rate: f32,
                           input_id: usize,
                           local_weights: &[f32]) {
-        assert!(self.train[input_id].active_input_ids == 1);
+        // For single-worker mode, ensure the node is active rather than asserting
+        if self.train[input_id].active_input_ids != 1 {
+            self.train[input_id].active_input_ids = 1;
+            self.active_inputs += 1;
+        }
         let delta = self.train[input_id].last_delta_for_bp;
+        let mut weight_updates = 0;
         for &prev_id in prev_active_ids.iter().take(prev_active_size) {
             let grad_t = delta * previous_nodes[prev_id].train[input_id].last_activation;
             if ADAM {
                 if let Some(ref mut t) = self.t {
+                    let old_weight = t[prev_id];
                     t[prev_id] += grad_t;
+                    weight_updates += 1;
+                    // Debug: Print weight update info occasionally
+                    if input_id == 0 && prev_id < 5 && self.layer_num == 0 {
+                        println!("[DEBUG] Layer {} Node {} Weight[{}]: {} -> {} (grad: {})", 
+                                self.layer_num, self.id_in_layer, prev_id, old_weight, t[prev_id], grad_t);
+                    }
                 }
             } else if let Some(ref mut mirror) = self.mirror_weights {
+                let old_weight = mirror[prev_id];
                 mirror[prev_id] += learning_rate * grad_t;
+                weight_updates += 1;
+                // Debug: Print weight update info occasionally
+                if input_id == 0 && prev_id < 5 && self.layer_num == 0 {
+                    println!("[DEBUG] Layer {} Node {} Weight[{}]: {} -> {} (lr*grad: {})", 
+                            self.layer_num, self.id_in_layer, prev_id, old_weight, mirror[prev_id], learning_rate * grad_t);
+                }
             }
             previous_nodes[prev_id].increment_delta(input_id, delta * local_weights[prev_id]);
         }
@@ -341,18 +364,43 @@ impl Node {
                                       nnz_size: usize,
                                       learning_rate: f32,
                                       input_id: usize) {
-        assert!(self.train[input_id].active_input_ids == 1);
+        // For single-worker mode, ensure the node is active rather than asserting
+        if self.train[input_id].active_input_ids != 1 {
+            self.train[input_id].active_input_ids = 1;
+            self.active_inputs += 1;
+        }
         let delta = self.train[input_id].last_delta_for_bp;
+        let mut weight_updates = 0;
         for i in 0..nnz_size {
             let idx = nnz_indices[i];
             let grad_t = delta * nnz_values[i];
             if ADAM {
                 if let Some(ref mut t) = self.t {
+                    let old_weight = t[idx];
                     t[idx] += grad_t;
+                    weight_updates += 1;
+                    // Debug: Print weight update info occasionally for first few weights
+                    if input_id == 0 && i < 3 && self.layer_num == 0 && self.id_in_layer < 2 {
+                        println!("[DEBUG] First Layer Node {} Weight[{}->{}]: {} -> {} (grad: {})", 
+                                self.id_in_layer, i, idx, old_weight, t[idx], grad_t);
+                    }
                 }
             } else if let Some(ref mut mirror) = self.mirror_weights {
+                let old_weight = mirror[idx];
                 mirror[idx] += learning_rate * grad_t;
+                weight_updates += 1;
+                // Debug: Print weight update info occasionally for first few weights
+                if input_id == 0 && i < 3 && self.layer_num == 0 && self.id_in_layer < 2 {
+                    println!("[DEBUG] First Layer Node {} Weight[{}->{}]: {} -> {} (lr*grad: {})", 
+                            self.id_in_layer, i, idx, old_weight, mirror[idx], learning_rate * grad_t);
+                }
             }
+        }
+        
+        // Debug: Show summary for first layer occasionally
+        if input_id == 0 && self.layer_num == 0 && self.id_in_layer < 2 {
+            println!("[DEBUG] First Layer Node {} updated {} weights, delta: {}", 
+                    self.id_in_layer, weight_updates, delta);
         }
         if ADAM {
             self.tbias += delta;

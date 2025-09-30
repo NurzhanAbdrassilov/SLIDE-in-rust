@@ -5,7 +5,7 @@ use std::sync::{Arc, Mutex};
 use rand::Rng;
 
 use crate::types::{kv_key_t, kv_val_datatype_t, kv_val_t};
-use crate::scl::ffi::{NewContext, Abort};
+// Removed FFI imports - using direct functions now
 use crate::scl::{read_key, write_kv, commit_tx};
 use crate::scl::block_storage_status;
 
@@ -29,7 +29,7 @@ pub struct CacheEntry<T: Copy> {
 impl<T: Copy> Drop for CacheEntry<T> {
     fn drop(&mut self) {
         if self.write_on_drop {
-            let ctx = unsafe { NewContext(0) };
+            let ctx = crate::scl::new_context(0);
             let guard = self.data.lock().unwrap();
             let byte_slice = unsafe {
                 slice::from_raw_parts(
@@ -43,7 +43,7 @@ impl<T: Copy> Drop for CacheEntry<T> {
                 ts: 0,
             };
             write_kv(ctx, &self.key, &val);
-            assert_eq!(commit_tx(ctx), block_storage_status::ACCEPT);
+            assert_eq!(commit_tx(ctx), block_storage_status::Accept);
         }
     }
 }
@@ -99,7 +99,7 @@ impl<T: Default + Copy> PSLCache<T> {
             return entry.clone();
         }
 
-        let ctx = unsafe { NewContext(0) };
+        let ctx = crate::scl::new_context(0);
 
         let v: kv_val_t = if new_read {
             kv_val_t { data: Vec::new(), dtype: kv_val_datatype_t::NOT_FOUND, ts: 0 }
@@ -116,7 +116,7 @@ impl<T: Default + Copy> PSLCache<T> {
             }
         }
 
-        unsafe { Abort(ctx) };
+        // Context cleanup - no-op for dummy implementation
 
         let write_on_drop = !read_only;
         let entry = Arc::new(CacheEntry {
@@ -293,9 +293,9 @@ impl<T: Default + Copy> PSLArray<T> {
             dtype: kv_val_datatype_t::BYTES,
             ts: 0,
         };
-        let ctx = unsafe { NewContext(0) };
+        let ctx = crate::scl::new_context(0);
         write_kv(ctx, &key, &val);
-        assert_eq!(commit_tx(ctx), block_storage_status::ACCEPT);
+        assert_eq!(commit_tx(ctx), block_storage_status::Accept);
     }
 
     pub fn set(&self, v: T, idx: usize) {
