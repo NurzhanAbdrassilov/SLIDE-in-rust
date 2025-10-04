@@ -29,3 +29,10 @@ Thumbs.db
 
 # Local configuration
 .env
+
+# Large dataset files
+dataset/Amazon/amazon_train.txt
+dataset/Amazon/amazon_test.txt
+dataset/EURLex-4.3K/train.txt
+dataset/EURLex-4.3K/test.txt
+dataset/EURLex-4.3K/validation.txt
