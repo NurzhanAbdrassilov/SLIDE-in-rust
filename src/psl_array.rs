@@ -5,7 +5,6 @@ use std::sync::{Arc, Mutex};
 use rand::Rng;
 
 use crate::types::{kv_key_t, kv_val_datatype_t, kv_val_t};
-// Removed FFI imports - using direct functions now
 use crate::scl::{read_key, write_kv, commit_tx};
 use crate::scl::block_storage_status;
 
@@ -115,8 +114,6 @@ impl<T: Default + Copy> PSLCache<T> {
                 std::ptr::copy_nonoverlapping(data_ptr, data.as_mut_ptr(), self.batch);
             }
         }
-
-        // Context cleanup - no-op for dummy implementation
 
         let write_on_drop = !read_only;
         let entry = Arc::new(CacheEntry {

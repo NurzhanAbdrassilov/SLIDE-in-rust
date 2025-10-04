@@ -1,5 +1,3 @@
-//! Neural Network implementation for SLIDE algorithm
-//! Handles sparse neural network training with distributed weight storage
 
 use std::sync::Arc;
 use std::time::Instant;
@@ -99,9 +97,14 @@ impl Network {
                 if let Some(ref t_weights) = node.t {
                     let sum: f32 = t_weights.iter().sum();
                     let avg = sum / t_weights.len() as f32;
-                    println!("    Node {} gradients: len={}, avg={:.6}", 
-                            node_idx, t_weights.len(), avg);
+                    let max_val = t_weights.iter().fold(f32::NEG_INFINITY, |a, &b| a.max(b));
+                    let min_val = t_weights.iter().fold(f32::INFINITY, |a, &b| a.min(b));
+                    println!("    Node {} gradients: len={}, avg={:.6}, range=[{:.6}, {:.6}]", 
+                            node_idx, t_weights.len(), avg, min_val, max_val);
                 }
+                
+                println!("    Node {} bias: mirror={:.6}, t_bias={:.6}", 
+                        node_idx, node.mirror_bias, node.tbias);
                 
                 if node_idx >= 2 { break; } // Sample first 3 nodes per layer
             }
@@ -325,6 +328,8 @@ impl Network {
                         let prev_layer = &mut left[j - 1];
 
                         let worker_id = (node_id * prev_dim) / weights_batch;
+                        // Ensure worker_id is within bounds for distributed storage
+                        let worker_id = worker_id.min(full_weights.len().saturating_sub(1));
                         let w_guard   = full_weights[worker_id].data.lock().unwrap();
                         let lw: &[f32] = &w_guard[..];
 

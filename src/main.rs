@@ -239,26 +239,27 @@ fn read_data_svm(num_batches: usize, net: &mut Network, epoch: usize, cfg: &Pars
     let _ = ReadFile(fd, &mut line_buf);
 
     for i in 0..num_batches {
-        if ((i + epoch * num_batches) % cfg.Stepsize) == 0 {
-            eval_data_svm(20, net, (epoch * num_batches + i) as i32, &cfg.testData, cfg.Batchsize);
+        // Evaluate less frequently to avoid hanging - only every 5000 batches instead of every 1000
+        if ((i + epoch * num_batches) % (cfg.Stepsize * 5)) == 0 && i > 0 {
+            println!("Running evaluation...");
+            eval_data_svm(5, net, (epoch * num_batches + i) as i32, &cfg.testData, cfg.Batchsize);
         }
         
-        // Progress reporting for long training runs
         if i % 100 == 0 {
-            println!("Processing batch {}/{} in epoch {} ({:.1}% complete)", 
+            println!("Batch {}/{} in epoch {} ({:.1}%)", 
                 i, num_batches, epoch, (i as f64 / num_batches as f64) * 100.0);
         }
-
+        
         let mut records: Vec<Vec<usize>> = Vec::with_capacity(cfg.Batchsize);
         let mut values:  Vec<Vec<f32>>   = Vec::with_capacity(cfg.Batchsize);
         let mut sizes:   Vec<usize>      = Vec::with_capacity(cfg.Batchsize);
         let mut labels:  Vec<Vec<usize>> = Vec::with_capacity(cfg.Batchsize);
         let mut labelsize: Vec<usize>    = Vec::with_capacity(cfg.Batchsize);
-
+        
         let mut count = 0usize;
         while let Some(line) = read_line_utf8(fd, &mut line_buf) {
             if line.is_empty() { continue; }
-
+            
             let (labels_part, feats_part) = match line.split_once(' ') {
                 Some((lp, fp)) => (lp, fp),
                 None => (line.as_str(), ""),
@@ -292,7 +293,7 @@ fn read_data_svm(num_batches: usize, net: &mut Network, epoch: usize, cfg: &Pars
             count += 1;
             if count >= cfg.Batchsize { break; }
         }
-
+        
         let mut rehash = false;
         let mut rebuild = false;
 
@@ -328,6 +329,13 @@ fn read_data_svm(num_batches: usize, net: &mut Network, epoch: usize, cfg: &Pars
         );
         let t2 = Instant::now();
         let _time_ms = (t2 - t1).as_millis() as i64;
+        
+        // Check weight updates after first few batches
+        if (i == 1 || i == 5 || i == 10) && epoch == 0 {
+            println!("=== WEIGHT CHECK AFTER BATCH {} ===", i);
+            net.report_weight_stats();
+            println!("==============================");
+        }
     }
 }
 
@@ -408,15 +416,14 @@ fn main() {
     let blob = default_config_blob();
     parseconfig(&blob, &mut cfg);
 
-    // Configure for Eurlex-4.3K dataset
     cfg.trainData = "dataset\\EURLex-4.3K\\train.txt".to_string();
     cfg.testData = "dataset\\EURLex-4.3K\\test.txt".to_string();
-    cfg.sizesOfLayers = vec![64, 4271];  // 64 hidden nodes, 4271 output classes
-    cfg.InputDim = 200000;  
-    cfg.totRecords = 45000;  
-    cfg.totRecordsTest = 6000;  
-    cfg.Batchsize = 32;   
-    cfg.Epoch = 5;  
+    cfg.sizesOfLayers = vec![64, 4271];
+    cfg.InputDim = 200000;
+    cfg.totRecords = 45000;
+    cfg.totRecordsTest = 6000;
+    cfg.Batchsize = 32;
+    cfg.Epoch = 5;
     cfg.numLayer = 2;
     cfg.Lr = 0.01;
 

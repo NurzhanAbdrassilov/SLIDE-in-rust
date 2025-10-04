@@ -216,20 +216,15 @@ impl Node {
         }
     }
 
-    /// Accumulates gradient delta for backpropagation
-    /// Only processes gradients when the node is active and has positive activation
     pub fn increment_delta(&mut self, input_id: usize, increment_value: f32) {
-        // Ensure input is marked as active for gradient computation
         if self.train[input_id].active_input_ids != 1 {
             self.train[input_id].active_input_ids = 1;
             self.active_inputs += 1;
         }
         
-        // Only accumulate gradients for active neurons (ReLU activation > 0)
         if self.train[input_id].last_activation > 0.0 {
             self.train[input_id].last_delta_for_bp += increment_value;
         } else {
-            // Skip gradient for inactive neurons to prevent infinite loops
             if self.layer_num == 0 && self.id_in_layer == 0 {
                 return;
             }
@@ -262,7 +257,6 @@ impl Node {
             self.active_inputs += 1;
         }
 
-        // Initialize activation value for computation
         if self.train[input_id].active_input_ids != 1 {
             self.train[input_id].last_activation = 0.0;
         }
@@ -277,13 +271,11 @@ impl Node {
         let base = (self.id_in_layer * self.dim) % weights_batch;
         let local_weights = &local_weights_arr[base..];
 
-        // Compute weighted sum of inputs
         for i in 0..length {
             let idx = indices[i];
             self.train[input_id].last_activation += local_weights[idx] * values[i];
         }
 
-        // Add bias term
         let bias_batch = self
             .bias
             .as_ref()
@@ -311,23 +303,19 @@ impl Node {
         self.train[input_id].last_activation
     }
 
-    /// Computes softmax probabilities and cross-entropy loss gradients
     pub fn compute_extra_stats_for_softmax(&mut self,
                                            normalization_constant: f32,
                                            input_id: usize,
                                            label: &[usize]) {
-        // Ensure input is marked as active
         if self.train[input_id].active_input_ids != 1 {
             self.train[input_id].active_input_ids = 1;
             self.active_inputs += 1;
         }
         
-        // Apply softmax normalization
         let scaled = self.train[input_id].last_activation / (normalization_constant + 1e-7);
         self.train[input_id].last_activation = scaled;
         self.train[input_id].last_gradient = 1.0;
         
-        // Compute cross-entropy loss gradient
         if label.contains(&self.id_in_layer) {
             self.train[input_id].last_delta_for_bp =
                 (1.0 / label.len() as f32 - scaled) / self.current_batch_size as f32;
@@ -336,7 +324,6 @@ impl Node {
         }
     }
 
-    /// Performs backpropagation to update weights and propagate gradients
     pub fn back_propagate(&mut self,
                           previous_nodes: &mut [Node],
                           prev_active_ids: &[usize],
@@ -344,7 +331,6 @@ impl Node {
                           learning_rate: f32,
                           input_id: usize,
                           local_weights: &[f32]) {
-        // Ensure input is marked as active
         if self.train[input_id].active_input_ids != 1 {
             self.train[input_id].active_input_ids = 1;
             self.active_inputs += 1;
@@ -352,11 +338,9 @@ impl Node {
         
         let delta = self.train[input_id].last_delta_for_bp;
         
-        // Update weights and propagate gradients to previous layer
         for &prev_id in prev_active_ids.iter().take(prev_active_size) {
             let grad_t = delta * previous_nodes[prev_id].train[input_id].last_activation;
             
-            // Accumulate weight gradients
             if ADAM {
                 if let Some(ref mut t) = self.t {
                     t[prev_id] += grad_t;
@@ -365,31 +349,26 @@ impl Node {
                 mirror[prev_id] += learning_rate * grad_t;
             }
             
-            // Propagate gradient to previous layer
             previous_nodes[prev_id].increment_delta(input_id, delta * local_weights[prev_id]);
         }
         
-        // Update bias
         if ADAM {
             self.tbias += delta;
         } else {
             self.mirror_bias += learning_rate * delta;
         }
         
-        // Reset for next iteration
         self.train[input_id].active_input_ids = 0;
         self.train[input_id].last_delta_for_bp = 0.0;
         self.active_inputs -= 1;
     }
 
-    /// Performs backpropagation for the first layer (input layer)
     pub fn back_propagate_first_layer(&mut self,
                                       nnz_indices: &[usize],
                                       nnz_values: &[f32],
                                       nnz_size: usize,
                                       learning_rate: f32,
                                       input_id: usize) {
-        // Ensure input is marked as active
         if self.train[input_id].active_input_ids != 1 {
             self.train[input_id].active_input_ids = 1;
             self.active_inputs += 1;
@@ -397,7 +376,6 @@ impl Node {
         
         let delta = self.train[input_id].last_delta_for_bp;
         
-        // Update weights for sparse input features
         for i in 0..nnz_size {
             let idx = nnz_indices[i];
             let grad_t = delta * nnz_values[i];
@@ -411,14 +389,12 @@ impl Node {
             }
         }
         
-        // Update bias
         if ADAM {
             self.tbias += delta;
         } else {
             self.mirror_bias += learning_rate * delta;
         }
         
-        // Reset for next iteration
         self.train[input_id].active_input_ids = 0;
         self.train[input_id].last_delta_for_bp = 0.0;
         self.active_inputs -= 1;
