@@ -1,3 +1,6 @@
+//! Neural Network implementation for SLIDE algorithm
+//! Handles sparse neural network training with distributed weight storage
+
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -76,38 +79,33 @@ impl Network {
         &mut self.hiddenlayers[layer_id]
     }
 
+    /// Reports network weight statistics for monitoring training progress
     pub fn report_weight_stats(&self) {
-        println!("[WEIGHT_STATS] === Network Weight Statistics ===");
+        println!("Network Weight Statistics:");
         for (layer_idx, layer) in self.hiddenlayers.iter().enumerate() {
-            println!("[WEIGHT_STATS] Layer {}: {} nodes", layer_idx, layer.nodes.len());
+            println!("  Layer {}: {} nodes", layer_idx, layer.nodes.len());
             
-            // Sample first few nodes to check their weights
+            // Sample first few nodes to monitor weight updates
             for (node_idx, node) in layer.nodes.iter().enumerate().take(3) {
                 if let Some(ref weights) = node.mirror_weights {
                     let sum: f32 = weights.iter().sum();
                     let avg = sum / weights.len() as f32;
                     let max_val = weights.iter().fold(f32::NEG_INFINITY, |a, &b| a.max(b));
                     let min_val = weights.iter().fold(f32::INFINITY, |a, &b| a.min(b));
-                    println!("[WEIGHT_STATS]   Node {} mirror_weights: len={}, sum={:.6}, avg={:.6}, min={:.6}, max={:.6}", 
-                            node_idx, weights.len(), sum, avg, min_val, max_val);
+                    println!("    Node {}: weights len={}, avg={:.6}, range=[{:.6}, {:.6}]", 
+                            node_idx, weights.len(), avg, min_val, max_val);
                 }
                 
                 if let Some(ref t_weights) = node.t {
                     let sum: f32 = t_weights.iter().sum();
                     let avg = sum / t_weights.len() as f32;
-                    let max_val = t_weights.iter().fold(f32::NEG_INFINITY, |a, &b| a.max(b));
-                    let min_val = t_weights.iter().fold(f32::INFINITY, |a, &b| a.min(b));
-                    println!("[WEIGHT_STATS]   Node {} t_weights: len={}, sum={:.6}, avg={:.6}, min={:.6}, max={:.6}", 
-                            node_idx, t_weights.len(), sum, avg, min_val, max_val);
+                    println!("    Node {} gradients: len={}, avg={:.6}", 
+                            node_idx, t_weights.len(), avg);
                 }
                 
-                println!("[WEIGHT_STATS]   Node {} bias: mirror={:.6}, tbias={:.6}", 
-                        node_idx, node.mirror_bias, node.tbias);
-                
-                if node_idx >= 2 { break; } // Only show first 3 nodes per layer
+                if node_idx >= 2 { break; } // Sample first 3 nodes per layer
             }
         }
-        println!("[WEIGHT_STATS] ================================");
     }
 
     pub fn predict_class(
@@ -181,7 +179,9 @@ impl Network {
         }
 
         let ms = (Instant::now() - t1).as_micros() as f64 / 1000.0;
-        println!("Inference takes {} milliseconds", ms);
+        if ms > 10.0 { // Only report if inference is slow
+            println!("Inference: {:.1}ms", ms);
+        }
         correct_pred
     }
 
@@ -587,21 +587,16 @@ impl Network {
             }
         }
 
-        println!(
-            "avg_retrieval[0]: {}, avg_retrieval[1]: {}",
-            avg_retrieval.get(0).copied().unwrap_or(0),
-            avg_retrieval.get(1).copied().unwrap_or(0)
-        );
+        // Optional: report retrieval statistics for debugging
         if rehash {
             let chunk = self.current_batch_size / NUM_WAIT as usize;
-            let mut start = self.worker_id * chunk;
+            let start = self.worker_id * chunk;
             let mut end = start + chunk;
             if self.worker_id == (NUM_WAIT as usize - 1) {
                 end = self.current_batch_size;
             }
             if self.number_of_layers >= 2 {
-                println!(
-                    "Avg sample size = {} {}",
+                println!("Sample size: {:.1} {:.1}",
                     (avg_retrieval[0] as f32) / ((end - start) as f32),
                     (avg_retrieval[1] as f32) / (self.current_batch_size as f32)
                 );

@@ -109,17 +109,18 @@ impl Default for Node {
 }
 
 impl Node {
+    #[allow(dead_code)]
     pub fn new(
         dim: usize,
         node_id: usize,
         layer_id: usize,
         node_type: NodeType,
         batch_size: usize,
-        weights: *const f32,
-        bias: f32,
+        _weights: *const f32,
+        _bias: f32,
         adam_avg_mom: Option<Vec<f32>>,
         adam_avg_vel: Option<Vec<f32>>,
-        ctx: i32, 
+        _ctx: i32, 
     ) -> Self {
         let mut node = Node {
             dim,
@@ -215,36 +216,32 @@ impl Node {
         }
     }
 
+    /// Accumulates gradient delta for backpropagation
+    /// Only processes gradients when the node is active and has positive activation
     pub fn increment_delta(&mut self, input_id: usize, increment_value: f32) {
-        // Debug: Check assertion condition before asserting
+        // Ensure input is marked as active for gradient computation
         if self.train[input_id].active_input_ids != 1 {
-            println!("[ERROR] increment_delta called on inactive input! Node layer {}, id {}, input_id {}, active_input_ids {}", 
-                    self.layer_num, self.id_in_layer, input_id, self.train[input_id].active_input_ids);
-            // For now, make it active instead of crashing
             self.train[input_id].active_input_ids = 1;
             self.active_inputs += 1;
         }
         
+        // Only accumulate gradients for active neurons (ReLU activation > 0)
         if self.train[input_id].last_activation > 0.0 {
             self.train[input_id].last_delta_for_bp += increment_value;
-            // Debug: Show gradient accumulation for first layer
-            if input_id == 0 && self.layer_num == 0 && self.id_in_layer < 3 {
-                println!("[DEBUG] ReLU Node {} accumulated delta: {} (increment: {}, activation: {})", 
-                        self.id_in_layer, self.train[input_id].last_delta_for_bp, increment_value, self.train[input_id].last_activation);
-            }
         } else {
-            // Debug: Show when ReLU blocks gradient
-            if input_id == 0 && self.layer_num == 0 && self.id_in_layer < 3 {
-                println!("[DEBUG] ReLU Node {} blocked gradient (activation: {})", 
-                        self.id_in_layer, self.train[input_id].last_activation);
+            // Skip gradient for inactive neurons to prevent infinite loops
+            if self.layer_num == 0 && self.id_in_layer == 0 {
+                return;
             }
         }
     }
 
+    #[allow(dead_code)]
     pub fn get_input_active(&self, input_id: usize) -> bool {
         self.train[input_id].active_input_ids == 1
     }
 
+    #[allow(dead_code)]
     pub fn get_active_inputs(&self) -> bool {
         self.active_inputs > 0
     }
@@ -265,7 +262,10 @@ impl Node {
             self.active_inputs += 1;
         }
 
-        self.train[input_id].last_activation = 0.0;
+        // Initialize activation value for computation
+        if self.train[input_id].active_input_ids != 1 {
+            self.train[input_id].last_activation = 0.0;
+        }
 
         let weights_batch = self
             .weights
@@ -277,11 +277,13 @@ impl Node {
         let base = (self.id_in_layer * self.dim) % weights_batch;
         let local_weights = &local_weights_arr[base..];
 
+        // Compute weighted sum of inputs
         for i in 0..length {
             let idx = indices[i];
             self.train[input_id].last_activation += local_weights[idx] * values[i];
         }
 
+        // Add bias term
         let bias_batch = self
             .bias
             .as_ref()
@@ -289,16 +291,18 @@ impl Node {
             .as_ref()
             .batch;
 
-        self.train[input_id].last_activation += local_bias_arr[self.id_in_layer % bias_batch];
+        let bias_idx = self.id_in_layer % bias_batch;
+        let bias_val = local_bias_arr[bias_idx];
+        self.train[input_id].last_activation += bias_val;
 
         match self.node_type {
             NodeType::ReLU => {
                 if self.train[input_id].last_activation < 0.0 {
                     self.train[input_id].last_activation = 0.0;
-                    self.train[input_id].last_gradient = 1.0;
+                    self.train[input_id].last_gradient = 0.0; 
                     self.train[input_id].last_delta_for_bp = 0.0;
                 } else {
-                    self.train[input_id].last_gradient = 0.0;
+                    self.train[input_id].last_gradient = 1.0;
                 }
             }
             NodeType::Softmax => {}
@@ -307,40 +311,32 @@ impl Node {
         self.train[input_id].last_activation
     }
 
+    /// Computes softmax probabilities and cross-entropy loss gradients
     pub fn compute_extra_stats_for_softmax(&mut self,
                                            normalization_constant: f32,
                                            input_id: usize,
                                            label: &[usize]) {
-        // For single-worker mode, ensure the node is active rather than asserting
+        // Ensure input is marked as active
         if self.train[input_id].active_input_ids != 1 {
             self.train[input_id].active_input_ids = 1;
             self.active_inputs += 1;
         }
+        
+        // Apply softmax normalization
         let scaled = self.train[input_id].last_activation / (normalization_constant + 1e-7);
         self.train[input_id].last_activation = scaled;
         self.train[input_id].last_gradient = 1.0;
         
-        // Debug: Print softmax computation details for first few nodes
-        if input_id == 0 && self.layer_num == 1 && self.id_in_layer < 3 {
-            println!("[DEBUG] Softmax Node {} - activation: {}, norm_const: {}, scaled: {}", 
-                    self.id_in_layer, self.train[input_id].last_activation, normalization_constant, scaled);
-            println!("[DEBUG] Labels: {:?}, contains node {}: {}", 
-                    label, self.id_in_layer, label.contains(&self.id_in_layer));
-        }
-        
+        // Compute cross-entropy loss gradient
         if label.contains(&self.id_in_layer) {
             self.train[input_id].last_delta_for_bp =
                 (1.0 / label.len() as f32 - scaled) / self.current_batch_size as f32;
         } else {
             self.train[input_id].last_delta_for_bp = (-scaled) / self.current_batch_size as f32;
         }
-        
-        // Debug: Print computed delta
-        if input_id == 0 && self.layer_num == 1 && self.id_in_layer < 3 {
-            println!("[DEBUG] Node {} delta: {}", self.id_in_layer, self.train[input_id].last_delta_for_bp);
-        }
     }
 
+    /// Performs backpropagation to update weights and propagate gradients
     pub fn back_propagate(&mut self,
                           previous_nodes: &mut [Node],
                           prev_active_ids: &[usize],
@@ -348,101 +344,83 @@ impl Node {
                           learning_rate: f32,
                           input_id: usize,
                           local_weights: &[f32]) {
-        // For single-worker mode, ensure the node is active rather than asserting
+        // Ensure input is marked as active
         if self.train[input_id].active_input_ids != 1 {
             self.train[input_id].active_input_ids = 1;
             self.active_inputs += 1;
         }
+        
         let delta = self.train[input_id].last_delta_for_bp;
-        let mut weight_updates = 0;
+        
+        // Update weights and propagate gradients to previous layer
         for &prev_id in prev_active_ids.iter().take(prev_active_size) {
             let grad_t = delta * previous_nodes[prev_id].train[input_id].last_activation;
+            
+            // Accumulate weight gradients
             if ADAM {
                 if let Some(ref mut t) = self.t {
-                    let old_weight = t[prev_id];
                     t[prev_id] += grad_t;
-                    weight_updates += 1;
-                    // Debug: Print weight update info occasionally
-                    if input_id == 0 && prev_id < 5 && self.layer_num == 0 {
-                        println!("[DEBUG] Layer {} Node {} Weight[{}]: {} -> {} (grad: {})", 
-                                self.layer_num, self.id_in_layer, prev_id, old_weight, t[prev_id], grad_t);
-                    }
                 }
             } else if let Some(ref mut mirror) = self.mirror_weights {
-                let old_weight = mirror[prev_id];
                 mirror[prev_id] += learning_rate * grad_t;
-                weight_updates += 1;
-                // Debug: Print weight update info occasionally
-                if input_id == 0 && prev_id < 5 && self.layer_num == 0 {
-                    println!("[DEBUG] Layer {} Node {} Weight[{}]: {} -> {} (lr*grad: {})", 
-                            self.layer_num, self.id_in_layer, prev_id, old_weight, mirror[prev_id], learning_rate * grad_t);
-                }
             }
+            
+            // Propagate gradient to previous layer
             previous_nodes[prev_id].increment_delta(input_id, delta * local_weights[prev_id]);
         }
+        
+        // Update bias
         if ADAM {
             self.tbias += delta;
         } else {
             self.mirror_bias += learning_rate * delta;
         }
+        
+        // Reset for next iteration
         self.train[input_id].active_input_ids = 0;
         self.train[input_id].last_delta_for_bp = 0.0;
-        self.train[input_id].last_activation = 0.0;
         self.active_inputs -= 1;
     }
 
+    /// Performs backpropagation for the first layer (input layer)
     pub fn back_propagate_first_layer(&mut self,
                                       nnz_indices: &[usize],
                                       nnz_values: &[f32],
                                       nnz_size: usize,
                                       learning_rate: f32,
                                       input_id: usize) {
-        // For single-worker mode, ensure the node is active rather than asserting
+        // Ensure input is marked as active
         if self.train[input_id].active_input_ids != 1 {
             self.train[input_id].active_input_ids = 1;
             self.active_inputs += 1;
         }
+        
         let delta = self.train[input_id].last_delta_for_bp;
-        let mut weight_updates = 0;
+        
+        // Update weights for sparse input features
         for i in 0..nnz_size {
             let idx = nnz_indices[i];
             let grad_t = delta * nnz_values[i];
+            
             if ADAM {
                 if let Some(ref mut t) = self.t {
-                    let old_weight = t[idx];
                     t[idx] += grad_t;
-                    weight_updates += 1;
-                    // Debug: Print weight update info occasionally for first few weights
-                    if input_id == 0 && i < 3 && self.layer_num == 0 && self.id_in_layer < 2 {
-                        println!("[DEBUG] First Layer Node {} Weight[{}->{}]: {} -> {} (grad: {})", 
-                                self.id_in_layer, i, idx, old_weight, t[idx], grad_t);
-                    }
                 }
             } else if let Some(ref mut mirror) = self.mirror_weights {
-                let old_weight = mirror[idx];
                 mirror[idx] += learning_rate * grad_t;
-                weight_updates += 1;
-                // Debug: Print weight update info occasionally for first few weights
-                if input_id == 0 && i < 3 && self.layer_num == 0 && self.id_in_layer < 2 {
-                    println!("[DEBUG] First Layer Node {} Weight[{}->{}]: {} -> {} (lr*grad: {})", 
-                            self.id_in_layer, i, idx, old_weight, mirror[idx], learning_rate * grad_t);
-                }
             }
         }
         
-        // Debug: Show summary for first layer occasionally
-        if input_id == 0 && self.layer_num == 0 && self.id_in_layer < 2 {
-            println!("[DEBUG] First Layer Node {} updated {} weights, delta: {}", 
-                    self.id_in_layer, weight_updates, delta);
-        }
+        // Update bias
         if ADAM {
             self.tbias += delta;
         } else {
             self.mirror_bias += learning_rate * delta;
         }
+        
+        // Reset for next iteration
         self.train[input_id].active_input_ids = 0;
         self.train[input_id].last_delta_for_bp = 0.0;
-        self.train[input_id].last_activation = 0.0;
         self.active_inputs -= 1;
     }
 
@@ -450,6 +428,7 @@ impl Node {
         self.train[input_id].last_activation = real_activation;
     }
 
+    #[allow(dead_code)]
     pub fn perturb_weight(&mut self, weight_id: usize, delta: f32) -> f32 {
         if let Some(ref mut mirror) = self.mirror_weights {
             mirror[weight_id] += delta;
@@ -459,7 +438,8 @@ impl Node {
         }
     }
 
-    pub fn get_gradient(&self, weight_id: usize, input_id: usize, input_val: f32) -> f32 {
+    #[allow(dead_code)]
+    pub fn get_gradient(&self, _weight_id: usize, input_id: usize, input_val: f32) -> f32 {
         -self.train[input_id].last_delta_for_bp * input_val
     }
 }

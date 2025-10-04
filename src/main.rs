@@ -131,6 +131,7 @@ fn parse_number(bin_name: &str) -> i32 {
     }
 }
 
+/// Evaluates model performance on test data
 fn eval_data_svm(num_batches_test: usize, net: &mut Network, iter: i32, test_path: &str, batchsize: usize) {
     let mut tot_correct = 0i32;
     let fd = openFile(test_path);
@@ -230,6 +231,7 @@ fn eval_data_svm(num_batches_test: usize, net: &mut Network, iter: i32, test_pat
     );
 }
 
+/// Processes training data in batches for one epoch
 fn read_data_svm(num_batches: usize, net: &mut Network, epoch: usize, cfg: &ParsedCfg) {
     let fd = openFile(&cfg.trainData);
     let mut line_buf = vec![0i8; MAX_LINE_SIZE];
@@ -241,15 +243,10 @@ fn read_data_svm(num_batches: usize, net: &mut Network, epoch: usize, cfg: &Pars
             eval_data_svm(20, net, (epoch * num_batches + i) as i32, &cfg.testData, cfg.Batchsize);
         }
         
-        // Debug: Show progress every 10 batches
-        if i % 10 == 0 {
-            println!("[DEBUG] Processing batch {}/{} in epoch {}", i, num_batches, epoch);
-        }
-        
-        // Show weight statistics after first few batches to confirm updates
-        if i == 5 && epoch == 0 {
-            println!("=== WEIGHTS AFTER 5 BATCHES ===");
-            net.report_weight_stats();
+        // Progress reporting for long training runs
+        if i % 100 == 0 {
+            println!("Processing batch {}/{} in epoch {} ({:.1}% complete)", 
+                i, num_batches, epoch, (i as f64 / num_batches as f64) * 100.0);
         }
 
         let mut records: Vec<Vec<usize>> = Vec::with_capacity(cfg.Batchsize);
@@ -378,14 +375,18 @@ fn read_line_utf8(fd: u32, buf: &mut [i8]) -> Option<String> {
 }
 
 
+/// SLIDE (Sub-Linear Deep Learning Engine) implementation for sparse neural networks
+/// Trains on the Eurlex-4.3K multilabel text classification dataset
 fn main() {
     let args: Vec<String> = env::args().collect();
     
     println!("Starting SLIDE Deep Learning with Eurlex Dataset");
+    
+    // Parse worker ID from command line arguments  
     let worker_id = if args.len() > 0 && !args[0].contains("slide-in-rust") {
         parse_number(&args[0]) - 1
     } else {
-        0 // Default to worker 0
+        0 // Single worker mode
     };
 
     println!("Using Eurlex dataset with {} workers", NUM_WAIT);
@@ -407,17 +408,17 @@ fn main() {
     let blob = default_config_blob();
     parseconfig(&blob, &mut cfg);
 
-    // Override with Eurlex dataset paths and corrected parameters - AFTER parseconfig to ensure they take effect
+    // Configure for Eurlex-4.3K dataset
     cfg.trainData = "dataset\\EURLex-4.3K\\train.txt".to_string();
     cfg.testData = "dataset\\EURLex-4.3K\\test.txt".to_string();
-    cfg.sizesOfLayers = vec![64, 4271];  // Smaller hidden layer (64 nodes) and correct output classes (4271)
-    cfg.InputDim = 200000;  // Actual Eurlex input dimension
-    cfg.totRecords = 45000;  // Actual Eurlex training records
-    cfg.totRecordsTest = 6000;  // Actual Eurlex test records
-    cfg.Batchsize = 32;   // Smaller batch size to reduce memory usage
-    cfg.Epoch = 5;  // More epochs for proper training
+    cfg.sizesOfLayers = vec![64, 4271];  // 64 hidden nodes, 4271 output classes
+    cfg.InputDim = 200000;  
+    cfg.totRecords = 45000;  
+    cfg.totRecordsTest = 6000;  
+    cfg.Batchsize = 32;   
+    cfg.Epoch = 5;  
     cfg.numLayer = 2;
-    cfg.Lr = 0.01;  // Override learning rate after parseconfig
+    cfg.Lr = 0.01;
 
     let num_batches = cfg.totRecords / cfg.Batchsize;
     let num_batches_test = cfg.totRecordsTest / cfg.Batchsize;
@@ -447,42 +448,36 @@ fn main() {
     let time_ms = (t2 - t1).as_micros() as f64 / 1000.0;
     println!("Network Initialization takes {} milliseconds", time_ms);
     
-    // Print actual configuration being used
-    println!("=== CONFIGURATION ===");
-    println!("Learning Rate: {}", cfg.Lr);
-    println!("Batch Size: {}", cfg.Batchsize);
-    println!("Input Dim: {}", cfg.InputDim);
-    println!("Layer Sizes: {:?}", cfg.sizesOfLayers);
-    println!("===================");
-
-    // Report initial weight statistics
-    println!("=== INITIAL WEIGHTS ===");
+    // Display training configuration
+    println!("Configuration: LR={}, Batch={}, Input Dim={}, Layers={:?}", 
+        cfg.Lr, cfg.Batchsize, cfg.InputDim, cfg.sizesOfLayers);
+    
+    println!("Initial network statistics:");
     net.report_weight_stats();
 
+    // Main training loop
     for e in 0..cfg.Epoch {
-        println!("=== STARTING EPOCH {} ===", e);
+        println!("Starting epoch {}/{}", e + 1, cfg.Epoch);
         
-        // Add panic handler around training
         std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             read_data_svm(num_batches, &mut net, e, &cfg);
         })).unwrap_or_else(|_| {
-            println!("ERROR: Panic occurred in read_data_svm for epoch {}", e);
+            println!("ERROR: Training failed at epoch {}", e);
             std::process::exit(1);
         });
 
-        println!("=== COMPLETED EPOCH {} ===", e);
-
-        // Report weight statistics after each epoch  
-        println!("=== WEIGHTS AFTER EPOCH {} ===", e);
+        println!("Completed epoch {}", e + 1);
         net.report_weight_stats();
 
+        // Evaluation
         if e == cfg.Epoch - 1 {
             eval_data_svm(num_batches_test, &mut net, ((e + 1) * num_batches) as i32, &cfg.testData, cfg.Batchsize);
         } else {
             eval_data_svm(50, &mut net, ((e + 1) * num_batches) as i32, &cfg.testData, cfg.Batchsize);
         }
+        
         net.save_weights(&cfg.savedWeights);
     }
     
-    println!("=== TRAINING COMPLETED SUCCESSFULLY ===");
+    println!("Training completed successfully");
 }

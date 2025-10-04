@@ -163,7 +163,9 @@ impl Layer {
             (None, None, None, None)
         };
 
+        println!("LOADWEIGHT = {}, will initialize = {}", LOADWEIGHT, !LOADWEIGHT);
         if !LOADWEIGHT {
+            println!("Initializing weights with random values for all workers");
             let mut rng = StdRng::seed_from_u64(33111);
             let mut weights_data = vec![0.0f32; no_of_nodes * previous_layer_num_of_nodes];
             let mut bias_data = vec![0.0f32; no_of_nodes];
@@ -174,30 +176,34 @@ impl Layer {
             for b in &mut bias_data {
                 *b = generate_normal_random(0.0, 0.01, &mut rng) as f32;
             }
+            
+            println!("Generated {} weights, first 5: {:?}", weights_data.len(), &weights_data[0..5.min(weights_data.len())]);
+            println!("Generated {} biases, first 5: {:?}", bias_data.len(), &bias_data[0..5.min(bias_data.len())]);
 
+            // Initialize all worker partitions, not just the current one
             let w_mut = Arc::get_mut(&mut weights).expect("unique Arc for weights");
-            let wi = Cell::new(0usize);
-            w_mut.init_range(
-                || {
-                    let i = wi.get();
-                    wi.set(i + 1);
-                    weights_data[i]
-                },
-                w_mut.pt_start as usize,
-                w_mut.pt_end as usize,
-            );
+            println!("Weight init - current worker range: {} to {} (total size: {})", w_mut.pt_start, w_mut.pt_end, w_mut.size);
+            
+            // Initialize ALL partitions in the weights array, not just current worker's partition
+            let mut wi = Cell::new(0usize);
+            w_mut.init(|| {
+                let i = wi.get();
+                wi.set(i + 1);
+                weights_data[i % weights_data.len()]
+            });
+            println!("Initialized full weight array with {} elements", wi.get());
 
             let b_mut = Arc::get_mut(&mut bias).expect("unique Arc for bias");
-            let bi = Cell::new(0usize);
-            b_mut.init_range(
-                || {
-                    let i = bi.get();
-                    bi.set(i + 1);
-                    bias_data[i]
-                },
-                b_mut.pt_start as usize,
-                b_mut.pt_end as usize,
-            );
+            println!("Bias init - current worker range: {} to {} (total size: {})", b_mut.pt_start, b_mut.pt_end, b_mut.size);
+            
+            // Initialize ALL partitions in the bias array
+            let mut bi = Cell::new(0usize);
+            b_mut.init(|| {
+                let i = bi.get();
+                bi.set(i + 1);
+                bias_data[i % bias_data.len()]
+            });
+            println!("Initialized full bias array with {} elements", bi.get());
         }
 
         let full_weights: Vec<Arc<CacheEntry<f32>>> = (0..(NUM_WAIT as usize))
