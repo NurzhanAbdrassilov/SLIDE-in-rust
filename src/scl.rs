@@ -1,41 +1,103 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use crate::types::{kv_key_t, kv_val_datatype_t, kv_val_t};
+use rocksdb::{DB, Options, WriteOptions};
+use serde::{Serialize, Deserialize};
 
 pub const MAX_VAL_SIZE: usize = std::mem::size_of::<f32>() * (1 << 20);
 
-// Dummy KVS implementation using HashMap
-struct DummyKVS {
-    storage: HashMap<String, kv_val_t>,
+// RocksDB-based KVS implementation
+struct RocksKVS {
+    db: DB,
+    db_path: String,
+    cache: HashMap<String, kv_val_t>,  // In-memory cache for performance
 }
 
-impl DummyKVS {
+impl RocksKVS {
     fn new() -> Self {
-        DummyKVS {
-            storage: HashMap::new(),
+        let db_path = "slide_rocksdb".to_string();
+        
+        // Create RocksDB with optimized settings for SLIDE workload
+        let mut opts = Options::default();
+        opts.create_if_missing(true);
+        opts.set_write_buffer_size(64 * 1024 * 1024); // 64MB write buffer
+        opts.set_max_write_buffer_number(3);
+        opts.set_min_write_buffer_number_to_merge(2);
+        opts.set_level_zero_file_num_compaction_trigger(10);
+        opts.set_level_zero_slowdown_writes_trigger(20);
+        opts.set_level_zero_stop_writes_trigger(40);
+        opts.set_max_bytes_for_level_base(512 * 1024 * 1024); // 512MB
+        opts.set_max_background_jobs(2);
+        opts.set_manual_wal_flush(true);
+        opts.set_allow_mmap_reads(true);
+        opts.set_allow_mmap_writes(true);
+        
+        let db = DB::open(&opts, &db_path)
+            .unwrap_or_else(|e| panic!("Failed to open RocksDB at {}: {}", db_path, e));
+
+        RocksKVS {
+            db,
+            db_path,
+            cache: HashMap::new(),
         }
     }
 
-    fn read_key(&self, key: &str) -> Option<kv_val_t> {
-        self.storage.get(key).cloned()
+    fn read_key(&mut self, key: &str) -> Option<kv_val_t> {
+        // Check cache first
+        if let Some(val) = self.cache.get(key) {
+            return Some(val.clone());
+        }
+
+        // Read from RocksDB
+        match self.db.get(key.as_bytes()) {
+            Ok(Some(data)) => {
+                match bincode::deserialize::<kv_val_t>(&data) {
+                    Ok(val) => {
+                        // Cache the result
+                        self.cache.insert(key.to_string(), val.clone());
+                        Some(val)
+                    }
+                    Err(_) => None,
+                }
+            }
+            Ok(None) => None,
+            Err(_) => None,
+        }
     }
 
     fn write_kv(&mut self, key: &str, val: kv_val_t) {
-        self.storage.insert(key.to_string(), val);
+        // Update cache
+        self.cache.insert(key.to_string(), val.clone());
+        
+        // Write to RocksDB with optimized settings
+        let mut write_opts = WriteOptions::default();
+        write_opts.disable_wal(true); // Disable WAL for better performance
+        
+        if let Ok(serialized) = bincode::serialize(&val) {
+            let _ = self.db.put_opt(key.as_bytes(), serialized, &write_opts);
+        }
     }
 
     fn clear(&mut self) {
-        self.storage.clear();
+        self.cache.clear();
+        // For RocksDB, we'll just recreate the database
+        let _ = &self.db; // Keep reference to avoid dropping
+        let _ = DB::destroy(&Options::default(), &self.db_path);
+        *self = Self::new();
     }
     
     fn len(&self) -> usize {
-        self.storage.len()
+        self.cache.len() // Approximate count from cache
+    }
+
+    fn flush(&self) {
+        let _ = self.db.flush();
     }
 }
 
-// Global dummy KVS instance
+// Global RocksDB KVS instance
 lazy_static::lazy_static! {
-    static ref GLOBAL_KVS: Arc<Mutex<DummyKVS>> = Arc::new(Mutex::new(DummyKVS::new()));
+    static ref GLOBAL_KVS: Arc<Mutex<RocksKVS>> = Arc::new(Mutex::new(RocksKVS::new()));
 }
 
 #[repr(C)]
@@ -58,9 +120,9 @@ pub fn new_context(_tid: i32) -> i32 {
 }
 
 
-// Direct KVS operations using the dummy HashMap implementation
+// Direct KVS operations using RocksDB implementation
 pub fn read_key(_ctx: i32, key: &kv_key_t) -> Box<kv_val_t> {
-    let kvs = GLOBAL_KVS.lock().unwrap();
+    let mut kvs = GLOBAL_KVS.lock().unwrap();
     if let Some(val) = kvs.read_key(key) {
         Box::new(val)
     } else {
@@ -83,13 +145,17 @@ pub fn commit_tx(_ctx: i32) -> block_storage_status {
 
 pub fn clear_global_kvs() {
     let mut kvs = GLOBAL_KVS.lock().unwrap();
-
     kvs.clear();
 }
 
 pub fn get_global_kvs_size() -> usize {
     let kvs = GLOBAL_KVS.lock().unwrap();
     kvs.len()
+}
+
+pub fn flush_global_kvs() {
+    let kvs = GLOBAL_KVS.lock().unwrap();
+    kvs.flush();
 }
 
 // Stub functions for compatibility

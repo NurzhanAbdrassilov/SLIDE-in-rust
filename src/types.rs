@@ -51,7 +51,7 @@ pub enum dgram_type_t {
 pub type kv_key_t = String;
 
 #[repr(u32)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum kv_val_datatype_t {
     NOT_FOUND ,
     DELETED,
@@ -59,7 +59,7 @@ pub enum kv_val_datatype_t {
     INTEGER,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct kv_val_t {
     pub data: Vec<u8>,
     pub dtype: kv_val_datatype_t,
