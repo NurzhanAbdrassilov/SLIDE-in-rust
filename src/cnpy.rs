@@ -245,8 +245,7 @@ pub fn create_npy_header<T: Copy + 'static>(shape: &[usize]) -> Vec<u8> {
     dict.extend(std::iter::repeat(' ').take(pad));
     dict.push('\n'); 
     header_len = dict.len();
-    println!("HEADER STRING: [{}]", dict);
-    println!("HEADER LEN: {}", header_len);
+
     let mut header = vec![0x93u8];
     header.extend(b"NUMPY");
     header.push(0x01); // //major version of numpy format
@@ -254,7 +253,7 @@ pub fn create_npy_header<T: Copy + 'static>(shape: &[usize]) -> Vec<u8> {
     let dict_len = header_len as u16;
     header.extend(&dict_len.to_le_bytes());
     header.extend(dict.as_bytes());
-    println!("HEADER BYTES: {:?}", &header);
+
     header
 }
 

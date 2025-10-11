@@ -12,7 +12,7 @@ pub struct WtaHash {
 
 impl WtaHash {
     pub fn new(num_hashes: usize, no_of_bits_to_hash: usize) -> Self {
-        println!("wtaHash");
+
         let range_pow = no_of_bits_to_hash;
 
         let seed = 33111u64;

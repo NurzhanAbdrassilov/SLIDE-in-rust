@@ -222,7 +222,7 @@ impl<T: Default + Copy> PSLArray<T> {
         self.offset = offset;
         self.batch = batch;
         self.cache.init(DEFAULT_CACHE_SIZE, self.batch);
-        println!("init_psl_array: size {}, this.size {}", size, self.size);
+
     }
 
     pub fn get_size(&self) -> usize { self.size }

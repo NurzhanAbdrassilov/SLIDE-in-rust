@@ -3,7 +3,7 @@ pub const BETA1: f32 = 0.9;
 pub const BETA2: f32 = 0.999;
 pub const EPS: f32 = 0.00000001;
 
-pub const NUM_WAIT: i32 = 4;
+pub const NUM_WAIT: i32 = 1;
 pub const TID: i32 = 2;
 
 //1: wta; 2: Densified wta; 3: topk minhash; 4: simhash

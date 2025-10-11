@@ -77,39 +77,7 @@ impl Network {
         &mut self.hiddenlayers[layer_id]
     }
 
-    /// Reports network weight statistics for monitoring training progress
-    pub fn report_weight_stats(&self) {
-        println!("Network Weight Statistics:");
-        for (layer_idx, layer) in self.hiddenlayers.iter().enumerate() {
-            println!("  Layer {}: {} nodes", layer_idx, layer.nodes.len());
-            
-            // Sample first few nodes to monitor weight updates
-            for (node_idx, node) in layer.nodes.iter().enumerate().take(3) {
-                if let Some(ref weights) = node.mirror_weights {
-                    let sum: f32 = weights.iter().sum();
-                    let avg = sum / weights.len() as f32;
-                    let max_val = weights.iter().fold(f32::NEG_INFINITY, |a, &b| a.max(b));
-                    let min_val = weights.iter().fold(f32::INFINITY, |a, &b| a.min(b));
-                    println!("    Node {}: weights len={}, avg={:.6}, range=[{:.6}, {:.6}]", 
-                            node_idx, weights.len(), avg, min_val, max_val);
-                }
-                
-                if let Some(ref t_weights) = node.t {
-                    let sum: f32 = t_weights.iter().sum();
-                    let avg = sum / t_weights.len() as f32;
-                    let max_val = t_weights.iter().fold(f32::NEG_INFINITY, |a, &b| a.max(b));
-                    let min_val = t_weights.iter().fold(f32::INFINITY, |a, &b| a.min(b));
-                    println!("    Node {} gradients: len={}, avg={:.6}, range=[{:.6}, {:.6}]", 
-                            node_idx, t_weights.len(), avg, min_val, max_val);
-                }
-                
-                println!("    Node {} bias: mirror={:.6}, t_bias={:.6}", 
-                        node_idx, node.mirror_bias, node.tbias);
-                
-                if node_idx >= 2 { break; } // Sample first 3 nodes per layer
-            }
-        }
-    }
+
 
     pub fn predict_class(
         &mut self,
@@ -181,10 +149,7 @@ impl Network {
             }
         }
 
-        let ms = (Instant::now() - t1).as_micros() as f64 / 1000.0;
-        if ms > 10.0 { // Only report if inference is slow
-            println!("Inference: {:.1}ms", ms);
-        }
+        let _ms = (Instant::now() - t1).as_micros() as f64 / 1000.0;
         correct_pred
     }
 
@@ -248,16 +213,17 @@ impl Network {
         rebuild: bool,
     ) -> f32 {
         let logloss = 0.0f32;
-        let mut avg_retrieval = vec![0usize; self.number_of_layers];
 
-        if iter % 6946 == 6945 && self.number_of_layers > 1 {
-            self.hiddenlayers[1].update_random_nodes();
-        }
+        // DISABLE random node updates which might corrupt learned representations
+        // if iter % 6946 == 6945 && self.number_of_layers > 1 {
+        //     self.hiddenlayers[1].update_random_nodes();
+        // }
 
         let mut tmplr = self.learning_rate;
         if ADAM {
+            // Apply ADAM learning rate bias correction (matches C++ implementation)
             let t = (iter + 1) as f32;
-            tmplr = self.learning_rate * ((1.0 - BETA2.powf(t)).sqrt() / (1.0 - BETA1.powf(t)));
+            tmplr = self.learning_rate * ((1.0 - BETA2.powf(t)).sqrt()) / (1.0 - BETA1.powf(t));
         }
 
         let chunk = self.current_batch_size / NUM_WAIT as usize;
@@ -282,20 +248,18 @@ impl Network {
                     (layer_ref.full_weights.clone(), layer_ref.full_bias.clone())
                 };
 
-                let _ = self.hiddenlayers[j].query_active_node_and_compute_activations(
-                    &mut active_nodes_per_layer,
-                    &mut active_values_per_layer,
-                    &mut sizes,
-                    j,
-                    i,
-                    &labels[i],
-                    self.sparsity[if cfg!(feature = "predict") { self.number_of_layers + j } else { j }],
-                    -1,
-                    &fw,
-                    &fb,
-                );
-            }
-
+                    let _ = self.hiddenlayers[j].query_active_node_and_compute_activations(
+                        &mut active_nodes_per_layer,
+                        &mut active_values_per_layer,
+                        &mut sizes,
+                        j,
+                        i,
+                        &labels[i],
+                        self.sparsity[j], // Use training sparsity for forward pass 
+                        -1,
+                        &fw,
+                        &fb,
+                    );            }
 
             for j in (0..self.number_of_layers).rev() {
                 let (left, right) = self.hiddenlayers.split_at_mut(j);
@@ -460,7 +424,7 @@ impl Network {
             let dim = self.hiddenlayers[l].previous_layer_num_of_nodes;
             let chunk_n =
                 (self.hiddenlayers[l].no_of_nodes + (NUM_WAIT as usize - 1)) / (NUM_WAIT as usize);
-            let mut start_m = self.worker_id * chunk_n;
+            let start_m = self.worker_id * chunk_n;
             let mut end_m = start_m + chunk_n;
             if self.worker_id == (NUM_WAIT as usize - 1) {
                 end_m = self.hiddenlayers[l].no_of_nodes;
@@ -492,33 +456,39 @@ impl Network {
                 }
 
                 if ADAM {
+                    // ADAM optimizer processing with fixed local indexing
+                    
                     for d in 0..dim {
                         let tgrad = node.t.as_ref().unwrap()[d];
-                        let off   = m * dim + d;
-
+                        
                         let new_mom = {
-                            let mom = node.adam_avg_mom.as_ref().unwrap()[off];
+                            let mom = node.adam_avg_mom.as_ref().unwrap()[d];
                             BETA1 * mom + (1.0 - BETA1) * tgrad
                         };
                         let new_vel = {
-                            let vel = node.adam_avg_vel.as_ref().unwrap()[off];
+                            let vel = node.adam_avg_vel.as_ref().unwrap()[d];
                             BETA2 * vel + (1.0 - BETA2) * tgrad * tgrad
                         };
 
-                        node.adam_avg_mom.as_mut().unwrap()[off] = new_mom;
-                        node.adam_avg_vel.as_mut().unwrap()[off] = new_vel;
+                        node.adam_avg_mom.as_mut().unwrap()[d] = new_mom;
+                        node.adam_avg_vel.as_mut().unwrap()[d] = new_vel;
                         node.t.as_mut().unwrap()[d] = 0.0;
 
-                        local_weights[d] += tmplr * new_mom / (new_vel.sqrt() + EPS);
+                        let weight_update = tmplr * new_mom / (new_vel.sqrt() + EPS);
+                        
+                        // Follow C++ implementation: ADD the ADAM update to weights
+                        local_weights[d] += weight_update;
                     }
 
                     node.adam_avg_mom_bias = BETA1 * node.adam_avg_mom_bias + (1.0 - BETA1) * node.tbias;
                     node.adam_avg_vel_bias = BETA2 * node.adam_avg_vel_bias + (1.0 - BETA2) * node.tbias * node.tbias;
+                    
                     let delta_bias = tmplr * node.adam_avg_mom_bias / (node.adam_avg_vel_bias.sqrt() + EPS);
+                    let clipped_delta_bias = delta_bias;
 
                     {
                         let mut b_guard = local_bias.data.lock().unwrap();
-                        b_guard[m - bias_offset] += delta_bias;
+                        b_guard[m - bias_offset] += clipped_delta_bias;
                     }
                     node.tbias = 0.0;
 
@@ -563,7 +533,7 @@ impl Network {
                 let guard = arr.data.lock().unwrap();
                 for i in (range_start..range_end).step_by(dim) {
                     let m = i / dim;
-                    let local_weights = &guard[i - range_start..i - range_start + dim];
+                    let _local_weights = &guard[i - range_start..i - range_start + dim];
 
                     self.hiddenlayers[l].add_to_hash_table(dim, m);
                 }
@@ -591,21 +561,9 @@ impl Network {
                 self.hiddenlayers[l].get_node_by_id(m).tbias = 0.0;
             }
         }
-
-        // Optional: report retrieval statistics for debugging
         if rehash {
-            let chunk = self.current_batch_size / NUM_WAIT as usize;
-            let start = self.worker_id * chunk;
-            let mut end = start + chunk;
-            if self.worker_id == (NUM_WAIT as usize - 1) {
-                end = self.current_batch_size;
-            }
-            if self.number_of_layers >= 2 {
-                println!("Sample size: {:.1} {:.1}",
-                    (avg_retrieval[0] as f32) / ((end - start) as f32),
-                    (avg_retrieval[1] as f32) / (self.current_batch_size as f32)
-                );
-            }
+            let _chunk = self.current_batch_size / NUM_WAIT as usize;
+            let _start = self.worker_id * _chunk;
         }
 
         logloss

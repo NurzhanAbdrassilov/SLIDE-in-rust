@@ -24,9 +24,12 @@ impl DummyKVS {
         self.storage.insert(key.to_string(), val);
     }
 
-    #[allow(dead_code)]
     fn clear(&mut self) {
         self.storage.clear();
+    }
+    
+    fn len(&self) -> usize {
+        self.storage.len()
     }
 }
 
@@ -78,6 +81,17 @@ pub fn commit_tx(_ctx: i32) -> block_storage_status {
     block_storage_status::Accept
 }
 
+pub fn clear_global_kvs() {
+    let mut kvs = GLOBAL_KVS.lock().unwrap();
+
+    kvs.clear();
+}
+
+pub fn get_global_kvs_size() -> usize {
+    let kvs = GLOBAL_KVS.lock().unwrap();
+    kvs.len()
+}
+
 // Stub functions for compatibility
 pub fn add_lock(_ctx: i32, _name: &kv_key_t) {}
 pub fn add_lock_group(_ctx: i32, _names: &[kv_key_t]) {}
@@ -123,10 +137,16 @@ pub fn read_file(fd: u32, buf: &mut [std::os::raw::c_char]) -> usize {
         match reader.read_line(&mut line) {
             Ok(0) => 0, // EOF
             Ok(_) => {
-                let bytes = line.as_bytes();
+                // Remove trailing newline/carriage return
+                let trimmed = line.trim_end_matches(&['\r', '\n'][..]);
+                let bytes = trimmed.as_bytes();
                 let copy_len = bytes.len().min(buf.len());
                 for (i, &byte) in bytes.iter().take(copy_len).enumerate() {
                     buf[i] = byte as std::os::raw::c_char;
+                }
+                // Add null terminator if there's room
+                if copy_len < buf.len() {
+                    buf[copy_len] = 0;
                 }
                 copy_len
             },
@@ -135,6 +155,16 @@ pub fn read_file(fd: u32, buf: &mut [std::os::raw::c_char]) -> usize {
     } else {
         0 // Invalid file descriptor
     }
+}
+
+pub fn close_file(fd: u32) {
+    let mut handles = FILE_HANDLES.lock().unwrap();
+    handles.remove(&fd);
+}
+
+pub fn get_open_files_count() -> usize {
+    let handles = FILE_HANDLES.lock().unwrap();
+    handles.len()
 }
 
 // Simplified async module for compatibility

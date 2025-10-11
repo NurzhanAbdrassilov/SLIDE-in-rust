@@ -1,0 +1,24 @@
+RangePow = 6,18
+K = 2,6
+L = 20,50
+Sparsity = 1,0.1,1,1
+
+Batchsize=32
+Rehash=6400
+Rebuild=128000
+InputDim=200000
+totRecords=45000
+totRecordsTest=6000
+
+Lr=0.0001
+Epoch=10
+Stepsize=1000
+
+sizesOfLayers=64,4271
+numLayer=2
+
+trainData=dataset/EURLex-4.3K/train.txt
+testData=dataset/EURLex-4.3K/test.txt
+
+weight=../savedWeight.npz
+savedweight=../savedWeight.npz

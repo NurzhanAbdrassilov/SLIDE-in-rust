@@ -163,26 +163,22 @@ impl Layer {
             (None, None, None, None)
         };
 
-        println!("LOADWEIGHT = {}, will initialize = {}", LOADWEIGHT, !LOADWEIGHT);
         if !LOADWEIGHT {
-            println!("Initializing weights with random values for all workers");
             let mut rng = StdRng::seed_from_u64(33111);
             let mut weights_data = vec![0.0f32; no_of_nodes * previous_layer_num_of_nodes];
             let mut bias_data = vec![0.0f32; no_of_nodes];
 
+            // Xavier/Glorot initialization for better stability
+            let xavier_std = (2.0 / (previous_layer_num_of_nodes as f64 + no_of_nodes as f64)).sqrt();
             for w in &mut weights_data {
-                *w = generate_normal_random(0.0, 0.01, &mut rng) as f32;
+                *w = generate_normal_random(0.0, xavier_std, &mut rng) as f32;  // Use proper Xavier initialization
             }
             for b in &mut bias_data {
-                *b = generate_normal_random(0.0, 0.01, &mut rng) as f32;
+                *b = 0.0;  // Initialize biases to zero
             }
-            
-            println!("Generated {} weights, first 5: {:?}", weights_data.len(), &weights_data[0..5.min(weights_data.len())]);
-            println!("Generated {} biases, first 5: {:?}", bias_data.len(), &bias_data[0..5.min(bias_data.len())]);
 
             // Initialize all worker partitions, not just the current one
             let w_mut = Arc::get_mut(&mut weights).expect("unique Arc for weights");
-            println!("Weight init - current worker range: {} to {} (total size: {})", w_mut.pt_start, w_mut.pt_end, w_mut.size);
             
             // Initialize ALL partitions in the weights array, not just current worker's partition
             let mut wi = Cell::new(0usize);
@@ -191,10 +187,7 @@ impl Layer {
                 wi.set(i + 1);
                 weights_data[i % weights_data.len()]
             });
-            println!("Initialized full weight array with {} elements", wi.get());
-
             let b_mut = Arc::get_mut(&mut bias).expect("unique Arc for bias");
-            println!("Bias init - current worker range: {} to {} (total size: {})", b_mut.pt_start, b_mut.pt_end, b_mut.size);
             
             // Initialize ALL partitions in the bias array
             let mut bi = Cell::new(0usize);
@@ -203,7 +196,6 @@ impl Layer {
                 bi.set(i + 1);
                 bias_data[i % bias_data.len()]
             });
-            println!("Initialized full bias array with {} elements", bi.get());
         }
 
         let full_weights: Vec<Arc<CacheEntry<f32>>> = (0..(NUM_WAIT as usize))
@@ -227,6 +219,11 @@ impl Layer {
 
         let t1 = Instant::now();
         for i in 0..no_of_nodes {
+            // Calculate the slice of train_array for this node
+            let node_train_start = i * batch_size;
+            let node_train_end = (i + 1) * batch_size;
+            let node_train_slice = train_array[node_train_start..node_train_end].to_vec();
+            
             nodes[i].update(
                 no_of_nodes,
                 previous_layer_num_of_nodes,
@@ -239,14 +236,13 @@ impl Layer {
                 Some(bias.clone()),
                 adam_avg_mom.clone(),
                 adam_avg_vel.clone(),
-                train_array.clone(),
+                node_train_slice,  // Only the slice for this node
                 t_batch.clone(),
                 t_bias_batch.clone(),
                 None,
             );
         }
-        let elapsed = t1.elapsed().as_micros();
-        println!("{} {}", no_of_nodes, elapsed as f64);
+        let _elapsed = t1.elapsed().as_micros();
 
         let normalization_constants = if matches!(node_type, NodeType::Softmax) {
             Some(vec![0.0; batch_size])
@@ -465,7 +461,7 @@ impl Layer {
     ) -> usize {
         let mut len: usize;
         let mut in_flag: usize = 0;
-
+        
         if (sparsity - 1.0).abs() < std::f32::EPSILON {
             len = self.no_of_nodes;
             lengths[layer_index + 1] = len;
@@ -509,9 +505,11 @@ impl Layer {
 
                 let mut counts: HashMap<usize, usize> = HashMap::new();
 
+                // Fix: Don't give labels unfair advantage in sparse selection
+                // Labels should compete fairly with hash-selected nodes
                 if matches!(self.node_type, NodeType::Softmax) && !label.is_empty() {
                     for &lab in label {
-                        counts.insert(lab, self.l);
+                        counts.insert(lab, 1);  // Fair initial count, not self.l
                     }
                 }
 
@@ -534,7 +532,8 @@ impl Layer {
 
                 let mut vect: Vec<usize> = Vec::new();
                 for (k, v) in counts.iter() {
-                    if *v > THRESH as usize {
+                    // Fix: Use >= instead of > for proper thresholding
+                    if *v >= THRESH as usize {
                         vect.push(*k);
                     }
                 }
@@ -542,7 +541,9 @@ impl Layer {
                 len = vect.len();
                 lengths[layer_index + 1] = len;
                 active_nodes_per_layer[layer_index + 1] = vect;
+                
 
+                
                 in_flag = len;
             } else if Mode == 4 {
                 let hashes: Vec<i32> = match HashFunction {
@@ -582,9 +583,11 @@ impl Layer {
 
                 let mut counts: HashMap<usize, usize> = HashMap::new();
 
+                // Fix: Don't give labels unfair advantage in sparse selection (Mode 4)
+                // Labels should compete fairly with hash-selected nodes  
                 if matches!(self.node_type, NodeType::Softmax) && !label.is_empty() {
                     for &lab in label {
-                        counts.insert(lab, self.l);
+                        counts.insert(lab, 1);  // Fair initial count, not self.l
                     }
                 }
 
@@ -744,20 +747,25 @@ impl Layer {
         }
 
         if matches!(self.node_type, NodeType::Softmax) {
-            let mut norm_sum = 0.0f32;
+            // Match C++ implementation exactly - store unnormalized exp values
+            // Normalization happens later in compute_extra_stats_for_softmax
+            if let Some(ref mut norms) = self.normalization_constants {
+                norms[input_id] = 0.0; // Reset normalization constant
+            }
+            
             for i in 0..next_len {
                 let real_activation = (active_values_per_layer[layer_index + 1][i] - max_value).exp();
                 active_values_per_layer[layer_index + 1][i] = real_activation;
+                
+                if let Some(ref mut norms) = self.normalization_constants {
+                    norms[input_id] += real_activation;
+                }
                 
                 let node_id = active_nodes_per_layer[layer_index + 1][i];
                 let node_id = node_id.min(self.nodes.len().saturating_sub(1));
                 
                 self.nodes[node_id]
                     .set_last_activation(input_id, real_activation);
-                norm_sum += real_activation;
-            }
-            if let Some(ref mut norms) = self.normalization_constants {
-                norms[input_id] = norm_sum;
             }
         }
 
@@ -765,12 +773,5 @@ impl Layer {
     }
 
     pub fn save_weights(&self, _file: &str) {
-        if self.layer_id == 0 {
-            println!("save for layer 0");
-            println!("{} {}", self.weights.get(0), self.weights.get(1));
-        } else {
-            println!("save for layer {}", self.layer_id);
-            println!("{} {}", self.weights.get(0), self.weights.get(1));
-        }
     }
 }

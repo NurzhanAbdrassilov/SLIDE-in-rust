@@ -49,17 +49,12 @@ impl LSH {
     }
 
     pub fn count(&self) {
-        for (j, table) in self.buckets.iter().enumerate() {
-            let mut total = 0;
+        for (_j, table) in self.buckets.iter().enumerate() {
+            let mut _total = 0;
             for b in table {
                 let sz = b.getSize();
-                if sz != 0 {
-                    print!("{} ", sz);
-                }
-                total += sz;
+                _total += sz;
             }
-            println!();
-            println!("TABLE {} Total {}", j, total);
         }
     }
 
@@ -92,10 +87,9 @@ impl LSH {
                     }
                 }
             }
-            if HashFunction == 3 {
-                let mask = (1u32 << self.range_pow) - 1;
-                index &= mask;
-            }
+            // Apply masking for all hash functions to ensure index stays within bucket bounds
+            let mask = (1u32 << self.range_pow) - 1;
+            index &= mask;
             indices[i] = index as usize;
         }
 
