@@ -1,5 +1,5 @@
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use crate::config::*;
@@ -221,7 +221,6 @@ impl Network {
 
         let mut tmplr = self.learning_rate;
         if ADAM {
-            // Apply ADAM learning rate bias correction (matches C++ implementation)
             let t = (iter + 1) as f32;
             tmplr = self.learning_rate * ((1.0 - BETA2.powf(t)).sqrt()) / (1.0 - BETA1.powf(t));
         }
@@ -444,6 +443,20 @@ impl Network {
                     && start_m * dim == self.hiddenlayers[l].weights.pt_start as usize
             );
 
+            // Get ADAM arrays before the loop to avoid borrow checker issues
+            let adam_mom_arc = if ADAM {
+                self.hiddenlayers[l].adam_avg_mom.as_ref()
+                    .expect("ADAM momentum not initialized").clone()
+            } else {
+                Arc::new(Mutex::new(vec![]))
+            };
+            let adam_vel_arc = if ADAM {
+                self.hiddenlayers[l].adam_avg_vel.as_ref()
+                    .expect("ADAM velocity not initialized").clone()
+            } else {
+                Arc::new(Mutex::new(vec![]))
+            };
+
             for m in start_m..end_m {
                 let node = self.hiddenlayers[l].get_node_by_id(m);
                 let base = m * dim - weights_offset;
@@ -456,39 +469,36 @@ impl Network {
                 }
 
                 if ADAM {
-                    // ADAM optimizer processing with fixed local indexing
+                    let mut mom_guard = adam_mom_arc.lock().unwrap();
+                    let mut vel_guard = adam_vel_arc.lock().unwrap();
                     
                     for d in 0..dim {
                         let tgrad = node.t.as_ref().unwrap()[d];
+                        let adam_avg_offset = m * dim + d;
                         
-                        let new_mom = {
-                            let mom = node.adam_avg_mom.as_ref().unwrap()[d];
-                            BETA1 * mom + (1.0 - BETA1) * tgrad
-                        };
-                        let new_vel = {
-                            let vel = node.adam_avg_vel.as_ref().unwrap()[d];
-                            BETA2 * vel + (1.0 - BETA2) * tgrad * tgrad
-                        };
+                        let new_mom = BETA1 * mom_guard[adam_avg_offset] + (1.0 - BETA1) * tgrad;
+                        let new_vel = BETA2 * vel_guard[adam_avg_offset] + (1.0 - BETA2) * tgrad * tgrad;
 
-                        node.adam_avg_mom.as_mut().unwrap()[d] = new_mom;
-                        node.adam_avg_vel.as_mut().unwrap()[d] = new_vel;
+                        mom_guard[adam_avg_offset] = new_mom;
+                        vel_guard[adam_avg_offset] = new_vel;
                         node.t.as_mut().unwrap()[d] = 0.0;
 
                         let weight_update = tmplr * new_mom / (new_vel.sqrt() + EPS);
-                        
-                        // Follow C++ implementation: ADD the ADAM update to weights
                         local_weights[d] += weight_update;
                     }
-
+                    
+                    drop(mom_guard);
+                    drop(vel_guard);
+                    
+                    // Bias momentum and velocity updates
                     node.adam_avg_mom_bias = BETA1 * node.adam_avg_mom_bias + (1.0 - BETA1) * node.tbias;
                     node.adam_avg_vel_bias = BETA2 * node.adam_avg_vel_bias + (1.0 - BETA2) * node.tbias * node.tbias;
                     
                     let delta_bias = tmplr * node.adam_avg_mom_bias / (node.adam_avg_vel_bias.sqrt() + EPS);
-                    let clipped_delta_bias = delta_bias;
 
                     {
                         let mut b_guard = local_bias.data.lock().unwrap();
-                        b_guard[m - bias_offset] += clipped_delta_bias;
+                        b_guard[m - bias_offset] += delta_bias;
                     }
                     node.tbias = 0.0;
 
@@ -497,6 +507,7 @@ impl Network {
                         w_guard[base..base + dim].copy_from_slice(&local_weights);
                     }
                 } else {
+                    // SGD path - not implemented yet
                 }
             }
 

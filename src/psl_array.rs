@@ -8,7 +8,7 @@ use crate::types::{kv_key_t, kv_val_datatype_t, kv_val_t};
 use crate::scl::{read_key, write_kv, commit_tx};
 use crate::scl::block_storage_status;
 
-pub const DEFAULT_BATCH_SIZE: usize = 1 << 25;
+pub const DEFAULT_BATCH_SIZE: usize = 1 << 20; // Reduced from 33M to 1M elements
 pub const DEFAULT_CACHE_SIZE: usize = 1 << 5;
 pub const MAX_BATCH_SIZE: usize = 1 << 5;
 

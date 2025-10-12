@@ -1,6 +1,6 @@
 use std::cell::Cell;
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use rand::{seq::SliceRandom, SeedableRng};
@@ -35,8 +35,9 @@ pub struct Layer {
     pub weights: Arc<PSLArray<f32>>,
     pub bias: Arc<PSLArray<f32>>,
 
-    pub adam_avg_mom: Option<Vec<f32>>,
-    pub adam_avg_vel: Option<Vec<f32>>,
+    // ADAM arrays now shared across all nodes with proper synchronization
+    pub adam_avg_mom: Option<Arc<Mutex<Vec<f32>>>>,
+    pub adam_avg_vel: Option<Arc<Mutex<Vec<f32>>>>,
 
     pub t_batch: Option<Arc<PSLArray<f32>>>,
     pub t_bias_batch: Option<Arc<PSLArray<f32>>>,
@@ -134,8 +135,8 @@ impl Layer {
         ));
 
         let (adam_avg_mom, adam_avg_vel, t_batch, t_bias_batch): (
-            Option<Vec<f32>>,
-            Option<Vec<f32>>,
+            Option<Arc<Mutex<Vec<f32>>>>,
+            Option<Arc<Mutex<Vec<f32>>>>,
             Option<Arc<PSLArray<f32>>>,
             Option<Arc<PSLArray<f32>>>,
         ) = if ADAM {
@@ -153,9 +154,10 @@ impl Layer {
                 worker_id,
                 no_of_nodes,
             ));
+            // Shared ADAM arrays - one per layer, accessed by all nodes with global indexing
             (
-                Some(vec![0.0; no_of_nodes * previous_layer_num_of_nodes]),
-                Some(vec![0.0; no_of_nodes * previous_layer_num_of_nodes]),
+                Some(Arc::new(Mutex::new(vec![0.0; no_of_nodes * previous_layer_num_of_nodes]))),
+                Some(Arc::new(Mutex::new(vec![0.0; no_of_nodes * previous_layer_num_of_nodes]))),
                 Some(tb),
                 Some(tbb),
             )
@@ -168,13 +170,11 @@ impl Layer {
             let mut weights_data = vec![0.0f32; no_of_nodes * previous_layer_num_of_nodes];
             let mut bias_data = vec![0.0f32; no_of_nodes];
 
-            // Xavier/Glorot initialization for better stability
-            let xavier_std = (2.0 / (previous_layer_num_of_nodes as f64 + no_of_nodes as f64)).sqrt();
             for w in &mut weights_data {
-                *w = generate_normal_random(0.0, xavier_std, &mut rng) as f32;  // Use proper Xavier initialization
+                *w = generate_normal_random(0.0, 0.01, &mut rng) as f32;
             }
             for b in &mut bias_data {
-                *b = 0.0;  // Initialize biases to zero
+                *b = generate_normal_random(0.0, 0.01, &mut rng) as f32;
             }
 
             // Initialize all worker partitions, not just the current one
@@ -224,6 +224,7 @@ impl Layer {
             let node_train_end = (i + 1) * batch_size;
             let node_train_slice = train_array[node_train_start..node_train_end].to_vec();
             
+            // ADAM arrays are NOT passed to nodes - they access via layer
             nodes[i].update(
                 no_of_nodes,
                 previous_layer_num_of_nodes,
@@ -234,8 +235,6 @@ impl Layer {
                 Some(weights.clone()),
                 previous_layer_num_of_nodes * i,
                 Some(bias.clone()),
-                adam_avg_mom.clone(),
-                adam_avg_vel.clone(),
                 node_train_slice,  // Only the slice for this node
                 t_batch.clone(),
                 t_bias_batch.clone(),
@@ -505,11 +504,9 @@ impl Layer {
 
                 let mut counts: HashMap<usize, usize> = HashMap::new();
 
-                // Fix: Don't give labels unfair advantage in sparse selection
-                // Labels should compete fairly with hash-selected nodes
                 if matches!(self.node_type, NodeType::Softmax) && !label.is_empty() {
                     for &lab in label {
-                        counts.insert(lab, 1);  // Fair initial count, not self.l
+                        counts.insert(lab, self.l);
                     }
                 }
 
@@ -532,8 +529,7 @@ impl Layer {
 
                 let mut vect: Vec<usize> = Vec::new();
                 for (k, v) in counts.iter() {
-                    // Fix: Use >= instead of > for proper thresholding
-                    if *v >= THRESH as usize {
+                    if *v > THRESH as usize {
                         vect.push(*k);
                     }
                 }
@@ -583,11 +579,9 @@ impl Layer {
 
                 let mut counts: HashMap<usize, usize> = HashMap::new();
 
-                // Fix: Don't give labels unfair advantage in sparse selection (Mode 4)
-                // Labels should compete fairly with hash-selected nodes  
                 if matches!(self.node_type, NodeType::Softmax) && !label.is_empty() {
                     for &lab in label {
-                        counts.insert(lab, 1);  // Fair initial count, not self.l
+                        counts.insert(lab, self.l);
                     }
                 }
 
@@ -747,10 +741,8 @@ impl Layer {
         }
 
         if matches!(self.node_type, NodeType::Softmax) {
-            // Match C++ implementation exactly - store unnormalized exp values
-            // Normalization happens later in compute_extra_stats_for_softmax
             if let Some(ref mut norms) = self.normalization_constants {
-                norms[input_id] = 0.0; // Reset normalization constant
+                norms[input_id] = 0.0;
             }
             
             for i in 0..next_len {

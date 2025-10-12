@@ -156,6 +156,7 @@ fn eval_data_svm(num_batches_test: usize, net: &mut Network, iter: i32, test_pat
     }
 
     let mut num_actual_batch_tests = 0usize;
+    let mut total_samples_tested = 0usize;
 
     for _i in 0..num_batches_test {
         let mut records: Vec<Vec<usize>> = Vec::with_capacity(batchsize);
@@ -220,10 +221,10 @@ fn eval_data_svm(num_batches_test: usize, net: &mut Network, iter: i32, test_pat
                 count,
             );
             tot_correct += correct;
+            total_samples_tested += count;  // Track actual sample count, not assumed batch size
         }
     }
 
-    let total_samples_tested = num_actual_batch_tests * batchsize;
     let final_accuracy = (tot_correct as f64) / (total_samples_tested as f64) * 100.0;
     
     println!("FINAL ACCURACY: {} correct out of {} samples = {:.2}%", tot_correct, total_samples_tested, final_accuracy);

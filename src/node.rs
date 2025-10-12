@@ -58,8 +58,9 @@ pub struct Node {
     pub bias: Option<Arc<PSLArray<f32>>>,
     pub weights_test: Option<Arc<RefCell<Vec<f32>>>>,
     pub mirror_weights: Option<Vec<f32>>,
-    pub adam_avg_mom: Option<Vec<f32>>,
-    pub adam_avg_vel: Option<Vec<f32>>,
+    // ADAM arrays removed - now owned by Layer with shared access
+    // pub adam_avg_mom: Option<Vec<f32>>,
+    // pub adam_avg_vel: Option<Vec<f32>>,
     pub t: Option<Vec<f32>>,
     pub t_batch: Option<Arc<PSLArray<f32>>>,
     pub t_bias_batch: Option<Arc<PSLArray<f32>>>,
@@ -91,8 +92,6 @@ impl Default for Node {
             bias: None,
             weights_test: None,
             mirror_weights: None,
-            adam_avg_mom: None,
-            adam_avg_vel: None,
             t: None,
             t_batch: None,
             t_bias_batch: None,
@@ -118,8 +117,6 @@ impl Node {
         batch_size: usize,
         _weights: *const f32,
         _bias: f32,
-        adam_avg_mom: Option<Vec<f32>>,
-        adam_avg_vel: Option<Vec<f32>>,
         _ctx: i32, 
     ) -> Self {
         let mut node = Node {
@@ -150,14 +147,10 @@ impl Node {
             adam_avg_mom_bias: 0.0,
             adam_avg_vel_bias: 0.0,
 
-            adam_avg_mom: None,
-            adam_avg_vel: None,
             t: None,
         };
 
         if ADAM {
-            node.adam_avg_mom = adam_avg_mom;
-            node.adam_avg_vel = adam_avg_vel;
             node.t = Some(vec![0.0; dim]);
         } else {
             // For non-ADAM (SGD), we need mirror_weights for direct weight updates
@@ -183,8 +176,6 @@ impl Node {
     weights: Option<Arc<PSLArray<f32>>>,
     weight_offset: usize,
     bias: Option<Arc<PSLArray<f32>>>,
-    adam_avg_mom: Option<Vec<f32>>,
-    adam_avg_vel: Option<Vec<f32>>,
     train_blob: Vec<Train>,
     t_batch: Option<Arc<PSLArray<f32>>>,
     t_bias_batch: Option<Arc<PSLArray<f32>>>,
@@ -205,8 +196,7 @@ impl Node {
         }
         
         if ADAM {
-            self.adam_avg_mom = adam_avg_mom;
-            self.adam_avg_vel = adam_avg_vel;
+            // ADAM arrays are now owned by Layer, not Node
             self.t = Some(vec![0.0; dim]);
             self.t_batch = t_batch;
             self.t_bias_batch = t_bias_batch;
@@ -237,23 +227,12 @@ impl Node {
     }
 
     pub fn increment_delta(&mut self, input_id: usize, increment_value: f32) {
-        if self.train[input_id].active_input_ids != 1 {
-            self.train[input_id].active_input_ids = 1;
-            self.active_inputs += 1;
-        }
-        
+        assert!(
+            self.train[input_id].active_input_ids == 1,
+            "Input Not Active but still called !! BUG"
+        );
         if self.train[input_id].last_activation > 0.0 {
-            // Only clip extreme gradients for ReLU nodes to allow learning
-            let clipped_increment = if increment_value.abs() > 100.0 {
-                increment_value.max(-100.0).min(100.0)
-            } else {
-                increment_value
-            };
-            self.train[input_id].last_delta_for_bp += clipped_increment;
-        } else {
-            if self.layer_num == 0 && self.id_in_layer == 0 {
-                return;
-            }
+            self.train[input_id].last_delta_for_bp += increment_value;
         }
     }
 
@@ -315,10 +294,10 @@ impl Node {
             NodeType::ReLU => {
                 if self.train[input_id].last_activation < 0.0 {
                     self.train[input_id].last_activation = 0.0;
-                    self.train[input_id].last_gradient = 0.0; 
+                    self.train[input_id].last_gradient = 1.0;
                     self.train[input_id].last_delta_for_bp = 0.0;
                 } else {
-                    self.train[input_id].last_gradient = 1.0;
+                    self.train[input_id].last_gradient = 0.0;
                 }
             }
             NodeType::Softmax => {}
@@ -331,15 +310,13 @@ impl Node {
                                            normalization_constant: f32,
                                            input_id: usize,
                                            label: &[usize]) {
-        if self.train[input_id].active_input_ids != 1 {
-            self.train[input_id].active_input_ids = 1;
-            self.active_inputs += 1;
-        }
+        assert!(
+            self.train[input_id].active_input_ids == 1,
+            "Input Not Active but still called !! BUG"
+        );
         
         let raw_activation = self.train[input_id].last_activation;
-        
-        // Follow C++ implementation: simple division by normalization constant
-        let safe_norm = normalization_constant + 0.0000001; // Prevent division by zero (matches C++)
+        let safe_norm = normalization_constant + 0.0000001;
         let scaled = raw_activation / safe_norm;
         
         self.train[input_id].last_activation = scaled;
@@ -348,7 +325,6 @@ impl Node {
         let is_correct_class = label.contains(&self.id_in_layer);
         let target_prob = if is_correct_class { 1.0 / label.len() as f32 } else { 0.0 };
         
-        // Follow C++ implementation exactly - NO gradient clipping!
         let raw_delta = target_prob - scaled;
         let delta = raw_delta / self.current_batch_size as f32;
         
@@ -362,20 +338,17 @@ impl Node {
                           learning_rate: f32,
                           input_id: usize,
                           local_weights: &[f32]) {
-        if self.train[input_id].active_input_ids != 1 {
-            self.train[input_id].active_input_ids = 1;
-            self.active_inputs += 1;
-        }
+        assert!(
+            self.train[input_id].active_input_ids == 1,
+            "Input Not Active but still called !! BUG"
+        );
         
         let delta = self.train[input_id].last_delta_for_bp;
         
-        // Backpropagation for hidden layer node - match C++ implementation exactly
         for &prev_id in prev_active_ids.iter().take(prev_active_size) {
-            // Update delta BEFORE updating weights (matches C++ order)
             let propagated_delta = delta * local_weights[prev_id];
             previous_nodes[prev_id].increment_delta(input_id, propagated_delta);
             
-            // Compute gradient for weight update
             let grad_t = delta * previous_nodes[prev_id].train[input_id].last_activation;
             
             if ADAM {
@@ -387,7 +360,6 @@ impl Node {
             }
         }
         
-        // Bias gradient update - match C++ implementation (no clipping)
         if ADAM {
             self.tbias += delta;
         } else {
@@ -396,6 +368,7 @@ impl Node {
         
         self.train[input_id].active_input_ids = 0;
         self.train[input_id].last_delta_for_bp = 0.0;
+        self.train[input_id].last_activation = 0.0;
         self.active_inputs -= 1;
     }
 
@@ -405,17 +378,16 @@ impl Node {
                                       nnz_size: usize,
                                       learning_rate: f32,
                                       input_id: usize) {
-        if self.train[input_id].active_input_ids != 1 {
-            self.train[input_id].active_input_ids = 1;
-            self.active_inputs += 1;
-        }
+        assert!(
+            self.train[input_id].active_input_ids == 1,
+            "Input Not Active but still called !! BUG"
+        );
         
         let delta = self.train[input_id].last_delta_for_bp;
         
-        // Backpropagation for first layer node - match C++ exactly
         for i in 0..nnz_size {
             let idx = nnz_indices[i];
-            let grad_t = delta * nnz_values[i];  // No clipping - match C++
+            let grad_t = delta * nnz_values[i];
             
             if ADAM {
                 if let Some(ref mut t) = self.t {
@@ -426,7 +398,6 @@ impl Node {
             }
         }
         
-        // Bias gradient update - match C++ implementation (no clipping)
         if ADAM {
             self.tbias += delta;
         } else {
@@ -435,6 +406,7 @@ impl Node {
         
         self.train[input_id].active_input_ids = 0;
         self.train[input_id].last_delta_for_bp = 0.0;
+        self.train[input_id].last_activation = 0.0;
         self.active_inputs -= 1;
     }
 
