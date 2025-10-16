@@ -12,7 +12,7 @@ totRecordsTest=153025
 
 Lr=0.0001
 Epoch=10
-Stepsize=1000
+Stepsize=100
 
 sizesOfLayers=128,13330
 numLayer=2

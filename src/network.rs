@@ -77,6 +77,15 @@ impl Network {
         &mut self.hiddenlayers[layer_id]
     }
 
+    pub fn get_layer_weights(&self, layer_id: usize, count: usize) -> Vec<f32> {
+        let layer = &self.hiddenlayers[layer_id];
+        let mut weights = Vec::with_capacity(count);
+        for i in 0..count.min(layer.no_of_nodes * layer.previous_layer_num_of_nodes) {
+            weights.push(layer.weights.get(i));
+        }
+        weights
+    }
+
 
 
     pub fn predict_class(
@@ -294,7 +303,11 @@ impl Network {
                         // Ensure worker_id is within bounds for distributed storage
                         let worker_id = worker_id.min(full_weights.len().saturating_sub(1));
                         let w_guard   = full_weights[worker_id].data.lock().unwrap();
-                        let lw: &[f32] = &w_guard[..];
+                        
+                        // Get the correct weight slice for this specific node
+                        let weight_offset = node_id * prev_dim;
+                        let local_offset = weight_offset % weights_batch;
+                        let node_weights = &w_guard[local_offset..local_offset + prev_dim];
 
                         node.back_propagate(
                             &mut prev_layer.nodes[..],
@@ -302,7 +315,7 @@ impl Network {
                             sizes[j],
                             tmplr,
                             i,
-                            lw,
+                            node_weights,
                         );
                     } else {
                         node.back_propagate_first_layer(

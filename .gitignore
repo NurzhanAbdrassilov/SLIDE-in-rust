@@ -1,10 +1,6 @@
 # Rust build artifacts
-/target/
-**/*.rs.bk
-*.pdb
-
-# Executables
-*.exe
+target/
+Cargo.lock
 
 # IDE files
 .vscode/
@@ -17,22 +13,34 @@
 .DS_Store
 Thumbs.db
 
-# Logs
+# Debug and log files
 *.log
+debug.txt
+rust_debug.txt
 
 # Temporary files
 *.tmp
 *.temp
 
-# Lock files (keep Cargo.lock for applications)
-# Cargo.lock
+# Compiled binaries
+*.exe
+*.dll
+*.so
+*.dylib
 
-# Local configuration
-.env
+# Coverage reports
+tarpaulin-report.html
+lcov.info
 
-# Large dataset files
-dataset/Amazon/amazon_train.txt
-dataset/Amazon/amazon_test.txt
-dataset/EURLex-4.3K/train.txt
-dataset/EURLex-4.3K/test.txt
-dataset/EURLex-4.3K/validation.txt
+# Rust specific
+**/*.rs.bk
+
+# Dataset files (typically large and shouldn't be tracked)
+dataset/
+
+# RocksDB database files
+slide_rocksdb/
+
+# Test executables
+test_murmur*
+test_rocksdb*

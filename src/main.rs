@@ -136,6 +136,11 @@ fn eval_data_svm(num_batches_test: usize, net: &mut Network, iter: i32, test_pat
     
     let mut tot_correct = 0i32;
     let fd = openFile(test_path);
+    if fd == 0 {
+        eprintln!("ERROR: Could not open test file: {}", test_path);
+        println!("FINAL ACCURACY: 0 correct out of 0 samples = NaN%");
+        return;
+    }
     let mut line_buf = vec![0i8; MAX_LINE_SIZE];
 
     let _ = read_line_utf8(fd, &mut line_buf);
@@ -146,8 +151,8 @@ fn eval_data_svm(num_batches_test: usize, net: &mut Network, iter: i32, test_pat
     iter.hash(&mut hasher);
     let hash_val = hasher.finish();
     
-    let max_skip = 6000 - (num_batches_test * batchsize);
-    let skip_lines = if max_skip > 0 { (hash_val as usize) % max_skip } else { 0 };
+    let max_skip = 6000i32 - (num_batches_test * batchsize) as i32;
+    let skip_lines = if max_skip > 0 { (hash_val as usize) % (max_skip as usize) } else { 0 };
     
     for _ in 0..skip_lines {
         if read_line_utf8(fd, &mut line_buf).is_none() {
@@ -166,6 +171,7 @@ fn eval_data_svm(num_batches_test: usize, net: &mut Network, iter: i32, test_pat
         let mut labelsize: Vec<usize>    = Vec::with_capacity(batchsize);
 
         let mut count = 0usize;
+        
         while let Some(line) = read_line_utf8(fd, &mut line_buf) {
             if line.is_empty() { continue; }
 
@@ -349,6 +355,13 @@ fn read_data_svm(num_batches: usize, net: &mut Network, epoch: usize, cfg: &Pars
             rehash,
             rebuild,
         );
+
+        // DEBUG: Print first 3 weights after each batch (like C++ version)
+        if i < 3 || i % 10 == 0 {  // Print for first 3 batches and every 10th batch
+            let weights = net.get_layer_weights(0, 3);
+            println!("Batch {}: w[0]={} w[1]={} w[2]={}", 
+                     i, weights[0], weights[1], weights[2]);
+        }
     }
     
     closeFile(fd);
@@ -358,7 +371,9 @@ fn read_data_svm(num_batches: usize, net: &mut Network, epoch: usize, cfg: &Pars
 
 fn read_line_utf8(fd: u32, buf: &mut [i8]) -> Option<String> {
     let n = ReadFile(fd, buf);
-    if n == 0 { return None; }
+    if n == 0 { 
+        return None; 
+    }
     let bytes: Vec<u8> = buf[..n].iter().map(|&b| b as u8).collect();
     let s = std::str::from_utf8(&bytes).ok()?
         .trim_end_matches(char::from(0))
@@ -422,6 +437,15 @@ fn main() {
         (),
         worker_id as usize,
     );
+
+    // DEBUG: Print first 10 weights from first layer for comparison
+    println!("\n=== DEBUG: Initial Weights (Layer 0, first 10) ===");
+    let initial_weights = net.get_layer_weights(0, 10);
+    for (i, weight) in initial_weights.iter().enumerate() {
+        println!("w[{}] = {}", i, weight);
+    }
+    println!("=== END DEBUG ===");
+    println!();
 
     for e in 0..cfg.Epoch {
         println!("EPOCH {}/{}", e + 1, cfg.Epoch);
